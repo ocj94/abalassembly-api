@@ -1,5 +1,8 @@
 # abalassembly-api
 
+[![Tests](https://github.com/ocj94/abalassembly-api/actions/workflows/test.yml/badge.svg)](https://github.com/ocj94/abalassembly-api/actions/workflows/test.yml)
+[![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE)
+
 Backend **dormant** d'Abalassembly. Construit mais non déployé : le HTML mono-fichier ne l'appelle que lorsque `BACKEND.enabled = true` y est activé.
 
 Stack : **Node + Fastify · PostgreSQL · Redis**, derrière **Cloudflare**, hébergé en **UE**. Conçu RGPD-ready (privacy-by-design).
