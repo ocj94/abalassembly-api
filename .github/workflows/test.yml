@@ -1,0 +1,53 @@
+name: Tests
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    # Vrais PostgreSQL et Redis, comme en local — pas de mocks, mêmes tests
+    # exactement que ceux lancés en développement (voir test/*.test.js).
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: aba_test
+          POSTGRES_PASSWORD: aba_test
+          POSTGRES_DB: abalassembly_test
+        ports: [ '5432:5432' ]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7
+        ports: [ '6379:6379' ]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - run: npm ci
+
+      # L'oracle TOTP indépendant (test/mfa.test.js) appelle pyotp en sous-processus
+      - run: pip install pyotp --break-system-packages
+
+      - run: npm test
+        # .env.test (committé) pointe déjà vers localhost:5432 / localhost:6379
+        # avec les mêmes identifiants que les services CI ci-dessus — une seule
+        # source de vérité pour la config de test, en local comme en CI.
