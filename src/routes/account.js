@@ -35,7 +35,7 @@ export default async function (app) {
     await db.query(`DELETE FROM progress WHERE user_id = $1`, [uid]);
     await db.query(
       `UPDATE users
-         SET email = NULL, username = 'compte supprimé', password_hash = '',
+         SET email = NULL, username = 'Anonymisé', password_hash = '',
              bio = NULL, country = NULL, deleted_at = now()
        WHERE id = $1`,
       [uid]
