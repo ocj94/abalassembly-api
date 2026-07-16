@@ -65,11 +65,12 @@ test('suppression : purge réellement en cascade (progress, tournois, parties) e
   const { token, user } = await signupUser(app);
   const uid = user.id;
 
-  // Fixture : une partie jouée, une progression, une entrée de tournoi.
-  // (game_results n'a pas encore de route de création — on simule la donnée
-  // telle qu'un futur endpoint /game/result l'insérerait, pour vérifier que
-  // la cascade de suppression fonctionne dès aujourd'hui sur le schéma réel.)
-  await db.query(`INSERT INTO game_results (user_id, result, mode) VALUES ($1,'win','ai')`, [uid]);
+  // Fixture : une partie jouée, une progression, une entrée de tournoi — via
+  // les vraies routes de l'API (POST /game/result existe désormais), pas une
+  // insertion SQL directe : le test vérifie ainsi la cascade de bout en bout,
+  // exactement comme un vrai client le vivrait.
+  await app.inject({ method: 'POST', url: '/game/result', headers: authed(token),
+    payload: { result: 'win', mode: 'ai' } });
   await app.inject({ method: 'PUT', url: '/progress', headers: authed(token), payload: { xp: 100 } });
   await app.inject({ method: 'POST', url: '/tournament/result', headers: authed(token),
     payload: { tournamentId: '2026-07', result: 'participant' } });
