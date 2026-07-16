@@ -89,7 +89,7 @@ test('suppression : purge réellement en cascade (progress, tournois, parties) e
   assert.equal(tourneys.rowCount, 0, 'tournament_entries doit être vidé');
   assert.equal(acct.rowCount, 1, 'la ligne users subsiste (soft-delete pour purge différée par le cron)');
   assert.equal(acct.rows[0].email, null, 'email anonymisé immédiatement');
-  assert.equal(acct.rows[0].username, 'compte supprimé');
+  assert.equal(acct.rows[0].username, 'Anonymisé');
   assert.equal(acct.rows[0].password_hash, '', 'le hash est effacé, pas juste le username');
   assert.ok(acct.rows[0].deleted_at, 'deleted_at doit être daté (déclenche la purge finale à J+30)');
 
