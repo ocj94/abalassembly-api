@@ -42,6 +42,10 @@ npm test                                 # applique les migrations puis lance la
 | GET | `/game/history` | ✔ | historique personnel (200 dernières parties) |
 | POST | `/tournament/result` | ✔ | soumettre un résultat |
 | GET | `/tournament/leaderboard` | — | classement mondial |
+| GET | `/lab/champion` | — | poids actuels du Labo distribué (public) |
+| GET | `/lab/job` | ✔ | job de test collectif en cours (s'il y en a un) |
+| POST | `/lab/job` | ✔ | proposer un candidat à tester |
+| POST | `/lab/result` | ✔ | soumettre un lot de résultats (vérifié par rejeu) |
 | GET | `/account/export` | ✔ | **portabilité** (export JSON) |
 | DELETE | `/account` | ✔ | **droit à l'oubli** (purge réelle) |
 | POST | `/mfa/setup` | ✔ | générer secret TOTP + QR (otpauth) |
@@ -50,7 +54,21 @@ npm test                                 # applique les migrations puis lance la
 | GET | `/mfa/status` | ✔ | état MFA du compte |
 | GET | `/health` | — | sonde de vie |
 
+## Labo distribué (`/lab/*`)
+
+Le Labo du jeu (voir `index.html`) tourne normalement en local, dans le `localStorage` de chaque joueur — voir le README d'Abalassembly pour ce mode. Ces routes permettent une variante **collective** : plusieurs joueurs contribuent des résultats de duels au même test, agrégés par un vrai SPRT (test séquentiel de Wald, méthodologie Fishtest/Stockfish) côté serveur.
+
+**Comment ça marche** : un candidat (nouveau jeu de poids d'évaluation) est proposé via `POST /lab/job`. Les joueurs y contribuent via `POST /lab/result` — chaque lot doit inclure une partie témoin (position de départ + séquence de coups) que le serveur **rejoue avec le vrai moteur** (`src/engine.js`) avant de compter quoi que ce soit. Quand le LLR cumulé de tous les contributeurs franchit le seuil, le candidat est promu et devient le nouveau champion, consultable via `GET /lab/champion` (public, sans authentification).
+
+**Anti-fraude, ce qui est réellement vérifié :**
+- **Légalité** : chaque coup de la partie témoin est validé contre les règles réelles du jeu — un coup inventé de toutes pièces est rejeté, jamais compté dans l'agrégat (voir `test/lab.test.js`, tests marqués 🛡️).
+- **Cohérence du résultat** : si la partie témoin se conclut (6 captures), le vainqueur annoncé doit correspondre à l'état réel du plateau après rejeu — annoncer une victoire qui ne s'est pas produite est détecté.
+- **Volume plausible** : un lot annonçant des centaines de parties d'un coup est rejeté d'emblée (`MAX_GAMES_PER_REPORT`), sans même toucher la base.
+- **Ce qui n'est PAS vérifié** : la réflexion de l'IA elle-même (recherche/évaluation) n'est pas rejouée pour chaque soumission — seulement la légalité et le résultat de la partie témoin. Un lot qui invente des scores plausibles mais soumet une partie témoin légale et cohérente n'est pas détecté par ce mécanisme ; c'est une limite assumée, pas un oubli.
+
 ## Sécurité & RGPD intégrés
+
+
 
 - Mots de passe **argon2id**, jamais en clair
 - **JWT** avec `jti` révocable (logout via Redis)
