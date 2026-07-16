@@ -38,6 +38,8 @@ npm test                                 # applique les migrations puis lance la
 | POST | `/auth/logout` | ✔ | révoquer le jeton |
 | GET/PUT | `/profile` | ✔ | lire / modifier le profil |
 | GET/PUT | `/progress` | ✔ | synchroniser XP/niveau/elo |
+| POST | `/game/result` | ✔ | enregistrer le résultat d'une partie |
+| GET | `/game/history` | ✔ | historique personnel (200 dernières parties) |
 | POST | `/tournament/result` | ✔ | soumettre un résultat |
 | GET | `/tournament/leaderboard` | — | classement mondial |
 | GET | `/account/export` | ✔ | **portabilité** (export JSON) |
