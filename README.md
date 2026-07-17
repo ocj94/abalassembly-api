@@ -43,7 +43,8 @@ npm test                                 # applique les migrations puis lance la
 | POST | `/tournament/result` | ✔ | soumettre un résultat |
 | GET | `/tournament/leaderboard` | — | classement mondial |
 | GET | `/lab/champion` | — | poids actuels du Labo distribué (public) |
-| GET | `/lab/job` | ✔ | job de test collectif en cours (s'il y en a un) |
+| GET | `/lab/contributors` | — | classement des contributeurs, fiabilité (public) |
+| GET | `/lab/job` | ✔ | job de test collectif en cours + disposition suggérée |
 | POST | `/lab/job` | ✔ | proposer un candidat à tester |
 | POST | `/lab/result` | ✔ | soumettre un lot de résultats (vérifié par rejeu) |
 | GET | `/account/export` | ✔ | **portabilité** (export JSON) |
@@ -56,15 +57,20 @@ npm test                                 # applique les migrations puis lance la
 
 ## Labo distribué (`/lab/*`)
 
-Le Labo du jeu (voir `index.html`) tourne normalement en local, dans le `localStorage` de chaque joueur — voir le README d'Abalassembly pour ce mode. Ces routes permettent une variante **collective** : plusieurs joueurs contribuent des résultats de duels au même test, agrégés par un vrai SPRT (test séquentiel de Wald, méthodologie Fishtest/Stockfish) côté serveur.
+Le Labo du jeu (voir `index.html`) tourne normalement en local, dans le `localStorage` de chaque joueur — voir le README d'Abalassembly pour ce mode. Ces routes permettent une variante **collective** : plusieurs joueurs contribuent des résultats de duels au même test, agrégés par un vrai SPRT (test séquentiel de Wald, méthodologie Fishtest/Stockfish/[OpenBench](https://github.com/AndyGrant/OpenBench)) côté serveur.
 
-**Comment ça marche** : un candidat (nouveau jeu de poids d'évaluation) est proposé via `POST /lab/job`. Les joueurs y contribuent via `POST /lab/result` — chaque lot doit inclure une partie témoin (position de départ + séquence de coups) que le serveur **rejoue avec le vrai moteur** (`src/engine.js`) avant de compter quoi que ce soit. Quand le LLR cumulé de tous les contributeurs franchit le seuil, le candidat est promu et devient le nouveau champion, consultable via `GET /lab/champion` (public, sans authentification).
+**Comment ça marche** : un candidat (nouveau jeu de poids d'évaluation) est proposé via `POST /lab/job`. Les joueurs y contribuent via `POST /lab/result` — chaque lot doit inclure une partie témoin (disposition + position de départ + séquence de coups) que le serveur **rejoue avec le vrai moteur** (`src/engine.js`) avant de compter quoi que ce soit. Quand le LLR cumulé de tous les contributeurs franchit le seuil, le candidat est promu et devient le nouveau champion, consultable via `GET /lab/champion` (public, sans authentification).
+
+**Diversité des ouvertures** (idée reprise d'OpenBench) : chaque soumission indique laquelle des **5 dispositions officielles** (`standard`/`belgian`/`german`/`dutch`/`swiss`, voir `src/layouts.js`) sa partie témoin utilise. `GET /lab/job` suggère la disposition la **moins couverte jusqu'ici pour ce job** (équilibrage glouton) — quel que soit l'ordre de connexion des contributeurs, les 5 ouvertures finissent naturellement représentées, au lieu qu'un candidat se sur-spécialise sur une seule position de départ.
+
+**Classement des contributeurs** (`GET /lab/contributors`, public) : parties vérifiées / soumises par joueur, avec un ratio de fiabilité. Reconnaissance de la contribution, et signal de confiance discret — un contributeur au long historique de soumissions vérifiées est plus fiable qu'un compte flambant neuf.
 
 **Anti-fraude, ce qui est réellement vérifié :**
 - **Légalité** : chaque coup de la partie témoin est validé contre les règles réelles du jeu — un coup inventé de toutes pièces est rejeté, jamais compté dans l'agrégat (voir `test/lab.test.js`, tests marqués 🛡️).
+- **Authenticité de l'ouverture** : la position de départ annoncée doit correspondre **exactement** à la disposition officielle revendiquée — impossible de prétendre tester "standard" en jouant en réalité depuis une position truquée.
 - **Cohérence du résultat** : si la partie témoin se conclut (6 captures), le vainqueur annoncé doit correspondre à l'état réel du plateau après rejeu — annoncer une victoire qui ne s'est pas produite est détecté.
 - **Volume plausible** : un lot annonçant des centaines de parties d'un coup est rejeté d'emblée (`MAX_GAMES_PER_REPORT`), sans même toucher la base.
-- **Ce qui n'est PAS vérifié** : la réflexion de l'IA elle-même (recherche/évaluation) n'est pas rejouée pour chaque soumission — seulement la légalité et le résultat de la partie témoin. Un lot qui invente des scores plausibles mais soumet une partie témoin légale et cohérente n'est pas détecté par ce mécanisme ; c'est une limite assumée, pas un oubli.
+- **Ce qui n'est PAS vérifié** : la réflexion de l'IA elle-même (recherche/évaluation) n'est pas rejouée pour chaque soumission — seulement la légalité, l'authenticité de l'ouverture et le résultat de la partie témoin. Un lot qui invente des scores plausibles mais soumet une partie témoin légale et cohérente n'est pas détecté par ce mécanisme ; c'est une limite assumée, pas un oubli.
 
 ## Sécurité & RGPD intégrés
 
