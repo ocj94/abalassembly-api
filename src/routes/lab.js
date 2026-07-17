@@ -2,6 +2,7 @@ import { requireAuth, hashIp } from '../auth.js';
 import { db } from '../db.js';
 import { createEngine } from '../engine.js';
 import { sprtLLR, sprtBounds, SPRT_DEFAULTS } from '../sprt.js';
+import { LAYOUTS, LAYOUT_KEYS, layoutToStart } from '../layouts.js';
 
 // Miroir du EVAL_W par défaut côté client (index.html, AI_WORKER_CODE).
 const DEFAULT_WEIGHTS = { center: 6, cohesion: 4, edge: 8, mob: 2, iso: 18, dng: 14 };
@@ -32,13 +33,14 @@ const jobSchema = {
 const resultSchema = {
   body: {
     type: 'object',
-    required: ['jobId', 'candidateWins', 'draws', 'baselineWins', 'sampleStart', 'sampleSeq', 'sampleWinner'],
+    required: ['jobId', 'candidateWins', 'draws', 'baselineWins', 'layout', 'sampleStart', 'sampleSeq', 'sampleWinner'],
     additionalProperties: false,
     properties: {
       jobId:         { type: 'integer', minimum: 1 },
       candidateWins: { type: 'integer', minimum: 0 },
       draws:         { type: 'integer', minimum: 0 },
       baselineWins:  { type: 'integer', minimum: 0 },
+      layout:           { type: 'string', enum: LAYOUT_KEYS },
       sampleStart:      { type: 'string', minLength: 3, maxLength: 400 },
       sampleStartColor: { type: 'string', enum: ['black', 'white'] },
       sampleSeq:        { type: 'string', minLength: 1, maxLength: 8000 },
@@ -53,18 +55,27 @@ const resultSchema = {
 // une partie qui ne peut même pas être rejouée légalement est un signal de
 // fraude ou de bug sans ambiguïté, et un résultat annoncé qui ne correspond
 // pas à l'état final du plateau l'est tout autant.
-function verifySampleGame({ sampleStart, sampleStartColor, sampleSeq, sampleWinner }) {
+//
+// Vérifie AUSSI que la position de départ annoncée correspond réellement à
+// la disposition officielle revendiquée (layout) — sans ça, un client pourrait
+// prétendre tester "standard" tout en jouant depuis une position truquée.
+function verifySampleGame({ layout, sampleStart, sampleStartColor, sampleSeq, sampleWinner }) {
   try {
     const E = createEngine();
-    const parts = String(sampleStart).split(',');
-    if (parts.length !== 2) return { ok: false, note: 'format de position de départ invalide' };
+
+    const canonicalStart = layoutToStart(E, layout);
+    if (!canonicalStart) return { ok: false, note: 'disposition de départ inconnue : ' + layout };
+    if (String(sampleStart) !== canonicalStart) {
+      return { ok: false, note: `position de départ ne correspond pas à la disposition "${layout}" annoncée` };
+    }
+
+    const parts = canonicalStart.split(',');
     const board = {};
     parts.forEach((part, side) => {
       const cells = part.slice(1).match(/[a-i][1-9]/g) || [];
       const color = side === 0 ? 'black' : 'white';
       cells.forEach(cc => { const p = E.abaproToRc(cc); if (p) board[p.r + ',' + p.c] = color; });
     });
-    if (Object.keys(board).length < 2) return { ok: false, note: 'position de départ vide ou illisible' };
     E.setBoard(board);
 
     let color = sampleStartColor || 'black';
@@ -106,6 +117,19 @@ async function currentChampion() {
   return rows[0] ? rows[0].candidate_weights : DEFAULT_WEIGHTS;
 }
 
+// Suggère la disposition la MOINS utilisée jusqu'ici pour ce job (équilibrage
+// glouton) : quel que soit l'ordre dans lequel les contributeurs se
+// connectent, la couverture des 5 ouvertures reste naturellement équilibrée.
+async function suggestLayout(jobId) {
+  const { rows } = await db.query(
+    `SELECT layout, COUNT(*) AS n FROM lab_results
+     WHERE job_id = $1 AND verified = true AND layout IS NOT NULL
+     GROUP BY layout`, [jobId]);
+  const counts = Object.fromEntries(LAYOUT_KEYS.map(k => [k, 0]));
+  rows.forEach(r => { counts[r.layout] = Number(r.n); });
+  return LAYOUT_KEYS.reduce((least, k) => counts[k] < counts[least] ? k : least, LAYOUT_KEYS[0]);
+}
+
 export default async function (app) {
   // Public : n'importe quel client (connecté ou non) peut lire le champion actuel.
   app.get('/champion', async () => {
@@ -117,6 +141,27 @@ export default async function (app) {
     return { weights: rows[0].candidate_weights, promoted: true, promotedAt: rows[0].closed_at, gamesConfirmed: Number(rows[0].games) };
   });
 
+  // Public : classement des contributeurs (parties vérifiées / soumises).
+  // Sert à la fois de reconnaissance et de signal de confiance discret — un
+  // contributeur avec un long historique de soumissions vérifiées est plus
+  // fiable qu'un compte flambant neuf (idée reprise d'OpenBench).
+  app.get('/contributors', async () => {
+    const { rows } = await db.query(
+      `SELECT u.username,
+              COUNT(*) FILTER (WHERE r.verified) AS verified,
+              COUNT(*) AS total
+       FROM lab_results r
+       JOIN users u ON u.id = r.user_id
+       WHERE u.deleted_at IS NULL
+       GROUP BY u.username
+       ORDER BY verified DESC, total DESC
+       LIMIT 50`);
+    return { contributors: rows.map(r => ({
+      username: r.username, verified: Number(r.verified), total: Number(r.total),
+      reliability: Number(r.total) ? Math.round(1000 * Number(r.verified) / Number(r.total)) / 10 : 0
+    })) };
+  });
+
   // Un addHook('preHandler', ...) s'applique à TOUT le contexte d'encapsulation
   // du plugin, pas seulement "à partir de cette ligne" — le sous-contexte via
   // register() est la vraie façon d'isoler les routes protégées de /champion
@@ -125,6 +170,8 @@ export default async function (app) {
     protectedRoutes.addHook('preHandler', requireAuth);
 
     // Récupère le job ouvert actuel (à quoi contribuer), ou null s'il n'y en a pas.
+    // Inclut une disposition suggérée (équilibrage des 5 ouvertures) et la
+    // répartition déjà couverte, pour transparence.
     protectedRoutes.get('/job', async () => {
       const { rows } = await db.query(
         `SELECT id, baseline_weights, candidate_weights, created_at,
@@ -134,8 +181,14 @@ export default async function (app) {
          FROM lab_jobs WHERE status = 'open' ORDER BY created_at ASC LIMIT 1`);
       if (!rows[0]) return { job: null };
       const r = rows[0];
+      const { rows: layoutRows } = await db.query(
+        `SELECT layout, COUNT(*) AS n FROM lab_results
+         WHERE job_id = $1 AND verified = true AND layout IS NOT NULL GROUP BY layout`, [r.id]);
+      const byLayout = Object.fromEntries(LAYOUT_KEYS.map(k => [k, 0]));
+      layoutRows.forEach(lr => { byLayout[lr.layout] = Number(lr.n); });
       return { job: { id: r.id, baselineWeights: r.baseline_weights, candidateWeights: r.candidate_weights,
-        createdAt: r.created_at, pooled: { candidateWins: Number(r.cw), draws: Number(r.d), baselineWins: Number(r.bw) } } };
+        createdAt: r.created_at, pooled: { candidateWins: Number(r.cw), draws: Number(r.d), baselineWins: Number(r.bw) },
+        suggestedLayout: await suggestLayout(r.id), byLayout } };
     });
 
     // Propose un nouveau candidat — seulement s'il n'y a pas déjà un job ouvert
@@ -153,7 +206,9 @@ export default async function (app) {
     });
 
     // Soumet un lot de résultats pour le job en cours. Vérifie la partie
-    // témoin par rejeu avant de compter quoi que ce soit dans l'agrégat SPRT.
+    // témoin par rejeu avant de compter quoi que ce soit dans l'agrégat SPRT,
+    // et vérifie désormais aussi que la disposition de départ annoncée est
+    // authentique (voir verifySampleGame).
     protectedRoutes.post('/result', { schema: resultSchema }, async (req, reply) => {
       const b = req.body;
       const total = b.candidateWins + b.draws + b.baselineWins;
@@ -166,17 +221,17 @@ export default async function (app) {
       if (job.status !== 'open') return reply.code(409).send({ error: 'ce job est déjà clos (' + job.status + ')' });
 
       const verdict = verifySampleGame({
-        sampleStart: b.sampleStart, sampleStartColor: b.sampleStartColor || 'black',
+        layout: b.layout, sampleStart: b.sampleStart, sampleStartColor: b.sampleStartColor || 'black',
         sampleSeq: b.sampleSeq, sampleWinner: b.sampleWinner
       });
 
       const ipHash = hashIp(req.ip);
       await db.query(
         `INSERT INTO lab_results (job_id, user_id, candidate_wins, draws, baseline_wins,
-          sample_start, sample_start_color, sample_seq, sample_winner, verified, verify_note, ip_hash)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+          sample_start, sample_start_color, sample_seq, sample_winner, layout, verified, verify_note, ip_hash)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
         [b.jobId, req.user.sub, b.candidateWins, b.draws, b.baselineWins,
-         b.sampleStart, b.sampleStartColor || 'black', b.sampleSeq, b.sampleWinner,
+         b.sampleStart, b.sampleStartColor || 'black', b.sampleSeq, b.sampleWinner, b.layout,
          verdict.ok, verdict.note, ipHash]);
 
       if (!verdict.ok) {
