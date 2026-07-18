@@ -40,11 +40,16 @@ const resultSchema = {
       candidateWins: { type: 'integer', minimum: 0 },
       draws:         { type: 'integer', minimum: 0 },
       baselineWins:  { type: 'integer', minimum: 0 },
-      layout:           { type: 'string', enum: LAYOUT_KEYS },
-      sampleStart:      { type: 'string', minLength: 3, maxLength: 400 },
-      sampleStartColor: { type: 'string', enum: ['black', 'white'] },
-      sampleSeq:        { type: 'string', minLength: 1, maxLength: 8000 },
-      sampleWinner:     { type: 'string', enum: ['candidate', 'baseline', 'draw'] }
+      layout:         { type: 'string', enum: LAYOUT_KEYS },
+      sampleStart:    { type: 'string', minLength: 3, maxLength: 400 },
+      // Quel camp JOUE LE CANDIDAT dans la partie témoin — pas "qui commence"
+      // (aux échecs comme à l'Abalone, Noir commence TOUJOURS ; le candidat
+      // peut néanmoins jouer Noir ou Blanc selon la partie, exactement comme
+      // le Labo local qui alterne colorA d'une partie à l'autre pour éviter
+      // un biais premier-joueur — voir suggestColor/byColorStats plus bas).
+      candidateColor: { type: 'string', enum: ['black', 'white'] },
+      sampleSeq:      { type: 'string', minLength: 1, maxLength: 8000 },
+      sampleWinner:   { type: 'string', enum: ['candidate', 'baseline', 'draw'] }
     }
   }
 };
@@ -59,7 +64,7 @@ const resultSchema = {
 // Vérifie AUSSI que la position de départ annoncée correspond réellement à
 // la disposition officielle revendiquée (layout) — sans ça, un client pourrait
 // prétendre tester "standard" tout en jouant depuis une position truquée.
-function verifySampleGame({ layout, sampleStart, sampleStartColor, sampleSeq, sampleWinner }) {
+function verifySampleGame({ layout, sampleStart, candidateColor, sampleSeq, sampleWinner }) {
   try {
     const E = createEngine();
 
@@ -78,7 +83,9 @@ function verifySampleGame({ layout, sampleStart, sampleStartColor, sampleSeq, sa
     });
     E.setBoard(board);
 
-    let color = sampleStartColor || 'black';
+    // Noir commence TOUJOURS (règle du jeu, jamais un choix) — indépendant
+    // de candidateColor, qui ne sert qu'à interpréter le résultat final.
+    let color = 'black';
     const tokens = String(sampleSeq).replace(/\d+\./g, ' ').trim().split(/\s+/).filter(Boolean);
     if (!tokens.length) return { ok: false, note: 'séquence de coups vide' };
     if (tokens.length > 600) return { ok: false, note: 'séquence de coups invraisemblablement longue' };
@@ -98,9 +105,8 @@ function verifySampleGame({ layout, sampleStart, sampleStartColor, sampleSeq, sa
       // moment de l'échantillon plutôt qu'une partie achevée à 6 captures.
       return { ok: true, note: 'partie légale, non conclue (échantillon partiel accepté)' };
     }
-    // Le camp "candidate" est par convention celui qui commence (sampleStartColor).
-    const candidateColor = sampleStartColor || 'black';
-    const candidateWon = (candidateColor === 'black' && blackWon) || (candidateColor === 'white' && whiteWon);
+    const candColor = candidateColor || 'black';
+    const candidateWon = (candColor === 'black' && blackWon) || (candColor === 'white' && whiteWon);
     const actualWinner = blackWon === whiteWon ? 'draw' : (candidateWon ? 'candidate' : 'baseline');
     if (actualWinner !== sampleWinner) {
       return { ok: false, note: `résultat annoncé (${sampleWinner}) incohérent avec la partie rejouée (${actualWinner})` };
@@ -130,15 +136,44 @@ async function suggestLayout(jobId) {
   return LAYOUT_KEYS.reduce((least, k) => counts[k] < counts[least] ? k : least, LAYOUT_KEYS[0]);
 }
 
+// Même principe que suggestLayout, mais pour équilibrer la couleur jouée par
+// le CANDIDAT (sample_start_color) — pendant du colorA qui alterne déjà côté
+// Labo local, adapté ici en suggestion plutôt qu'en alternance forcée : le
+// serveur ne peut pas imposer une couleur à une partie déjà jouée localement,
+// seulement orienter la prochaine contribution vers la couleur sous-représentée.
+async function suggestColor(jobId) {
+  const { rows } = await db.query(
+    `SELECT candidate_color AS color, COUNT(*) AS n FROM lab_results
+     WHERE job_id = $1 AND verified = true GROUP BY candidate_color`, [jobId]);
+  const counts = { black: 0, white: 0 };
+  rows.forEach(r => { if (counts[r.color] !== undefined) counts[r.color] = Number(r.n); });
+  return counts.black <= counts.white ? 'black' : 'white';
+}
+
+// Répartition des résultats agrégés par couleur jouée par le candidat —
+// équivalent serveur de byColorAn/byColorAwin déjà présents dans le Labo
+// local, pour repérer un éventuel biais premier-joueur dans les données
+// collectives (voir le commentaire "Biais premier joueur (colorA)" côté client).
+async function byColorStats(jobId) {
+  const { rows } = await db.query(
+    `SELECT candidate_color AS color,
+            COALESCE(SUM(candidate_wins),0) AS w, COALESCE(SUM(draws),0) AS d, COALESCE(SUM(baseline_wins),0) AS l
+     FROM lab_results WHERE job_id = $1 AND verified = true GROUP BY candidate_color`, [jobId]);
+  const out = { black: { candidateWins: 0, draws: 0, baselineWins: 0 }, white: { candidateWins: 0, draws: 0, baselineWins: 0 } };
+  rows.forEach(r => { if (out[r.color]) out[r.color] = { candidateWins: Number(r.w), draws: Number(r.d), baselineWins: Number(r.l) }; });
+  return out;
+}
+
 export default async function (app) {
   // Public : n'importe quel client (connecté ou non) peut lire le champion actuel.
   app.get('/champion', async () => {
     const { rows } = await db.query(
-      `SELECT candidate_weights, closed_at,
+      `SELECT id, candidate_weights, closed_at,
               (SELECT COALESCE(SUM(candidate_wins+draws+baseline_wins),0) FROM lab_results WHERE job_id = lab_jobs.id AND verified = true) AS games
        FROM lab_jobs WHERE status = 'promoted' ORDER BY closed_at DESC LIMIT 1`);
     if (!rows[0]) return { weights: DEFAULT_WEIGHTS, promoted: false };
-    return { weights: rows[0].candidate_weights, promoted: true, promotedAt: rows[0].closed_at, gamesConfirmed: Number(rows[0].games) };
+    return { weights: rows[0].candidate_weights, promoted: true, promotedAt: rows[0].closed_at,
+      gamesConfirmed: Number(rows[0].games), byColor: await byColorStats(rows[0].id) };
   });
 
   // Public : classement des contributeurs (parties vérifiées / soumises).
@@ -188,7 +223,8 @@ export default async function (app) {
       layoutRows.forEach(lr => { byLayout[lr.layout] = Number(lr.n); });
       return { job: { id: r.id, baselineWeights: r.baseline_weights, candidateWeights: r.candidate_weights,
         createdAt: r.created_at, pooled: { candidateWins: Number(r.cw), draws: Number(r.d), baselineWins: Number(r.bw) },
-        suggestedLayout: await suggestLayout(r.id), byLayout } };
+        suggestedLayout: await suggestLayout(r.id), byLayout,
+        suggestedColor: await suggestColor(r.id), byColor: await byColorStats(r.id) } };
     });
 
     // Propose un nouveau candidat — seulement s'il n'y a pas déjà un job ouvert
@@ -221,17 +257,17 @@ export default async function (app) {
       if (job.status !== 'open') return reply.code(409).send({ error: 'ce job est déjà clos (' + job.status + ')' });
 
       const verdict = verifySampleGame({
-        layout: b.layout, sampleStart: b.sampleStart, sampleStartColor: b.sampleStartColor || 'black',
+        layout: b.layout, sampleStart: b.sampleStart, candidateColor: b.candidateColor || 'black',
         sampleSeq: b.sampleSeq, sampleWinner: b.sampleWinner
       });
 
       const ipHash = hashIp(req.ip);
       await db.query(
         `INSERT INTO lab_results (job_id, user_id, candidate_wins, draws, baseline_wins,
-          sample_start, sample_start_color, sample_seq, sample_winner, layout, verified, verify_note, ip_hash)
+          sample_start, candidate_color, sample_seq, sample_winner, layout, verified, verify_note, ip_hash)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
         [b.jobId, req.user.sub, b.candidateWins, b.draws, b.baselineWins,
-         b.sampleStart, b.sampleStartColor || 'black', b.sampleSeq, b.sampleWinner, b.layout,
+         b.sampleStart, b.candidateColor || 'black', b.sampleSeq, b.sampleWinner, b.layout,
          verdict.ok, verdict.note, ipHash]);
 
       if (!verdict.ok) {
