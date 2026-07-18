@@ -30,7 +30,7 @@ async function openJob(token) {
 }
 function basePayload(jobId, overrides = {}) {
   return { jobId, candidateWins: 1, draws: 0, baselineWins: 0,
-    layout: 'belgian', sampleStart: GAME.start, sampleStartColor: GAME.startColor,
+    layout: 'belgian', sampleStart: GAME.start, candidateColor: 'black',
     sampleSeq: GAME.seq, sampleWinner: 'candidate', ...overrides };
 }
 
@@ -161,6 +161,55 @@ test('✅ un résultat légitime et vérifié compte réellement dans l\'agréga
   assert.equal(body.pooled.candidateWins, 1);
 });
 
+test('✅ CANDIDAT JOUE BLANC : Noir commence toujours la partie rejouée, mais le résultat s\'interprète bien du point de vue de Blanc', async () => {
+  await db.query(`UPDATE lab_jobs SET status='rejected', closed_at=now() WHERE status='open'`);
+  const { token } = await signupUser(app);
+  const job = await openJob(token);
+  // DECISIVE.winner est calculé du point de vue de Noir dans le générateur de
+  // fixture ('candidate' = Noir a gagné). Vu depuis un candidat qui joue
+  // Blanc, le résultat s'inverse : Noir gagne = 'baseline' pour ce candidat.
+  const winnerFromWhite = DECISIVE.winner === 'candidate' ? 'baseline' : 'candidate';
+  const res = await app.inject({ method: 'POST', url: '/lab/result', headers: authed(token),
+    payload: basePayload(job.id, { layout: 'belgian', sampleStart: DECISIVE.start,
+      sampleSeq: DECISIVE.seq, candidateColor: 'white', sampleWinner: winnerFromWhite }) });
+  assert.equal(res.json().counted, true,
+    'un résultat correctement interprété pour un candidat Blanc doit être accepté: ' + JSON.stringify(res.json()));
+});
+
+test('🛡️ ANTI-FRAUDE : candidat Blanc avec un résultat non inversé (calculé comme si c\'était Noir) est détecté', async () => {
+  await db.query(`UPDATE lab_jobs SET status='rejected', closed_at=now() WHERE status='open'`);
+  const { token } = await signupUser(app);
+  const job = await openJob(token);
+  // Erreur plausible côté client : déclarer candidateColor='white' mais garder
+  // sampleWinner tel que calculé pour Noir, sans l'inverser — exactement le
+  // bug de conception trouvé en construisant ce test (voir migration 005).
+  const res = await app.inject({ method: 'POST', url: '/lab/result', headers: authed(token),
+    payload: basePayload(job.id, { layout: 'belgian', sampleStart: DECISIVE.start,
+      sampleSeq: DECISIVE.seq, candidateColor: 'white', sampleWinner: DECISIVE.winner }) });
+  assert.equal(res.json().counted, false, 'un résultat non inversé pour un candidat Blanc doit être rejeté');
+});
+
+test('⚖️ ÉQUILIBRAGE COULEUR : GET /lab/job suggère la couleur la moins jouée par le candidat', async () => {
+  await db.query(`UPDATE lab_jobs SET status='rejected', closed_at=now() WHERE status='open'`);
+  const { token } = await signupUser(app);
+  const job = await openJob(token);
+
+  const j1 = await app.inject({ method: 'GET', url: '/lab/job', headers: authed(token) });
+  const firstSuggestion = j1.json().job.suggestedColor;
+  assert.ok(['black', 'white'].includes(firstSuggestion));
+
+  // Alimente 3 fois la couleur suggérée — la suggestion doit basculer vers l'autre.
+  for (let i = 0; i < 3; i++) {
+    await app.inject({ method: 'POST', url: '/lab/result', headers: authed(token),
+      payload: basePayload(job.id, { candidateColor: firstSuggestion, draws: 1, baselineWins: 1 }) });
+  }
+  const j2 = await app.inject({ method: 'GET', url: '/lab/job', headers: authed(token) });
+  const body2 = j2.json().job;
+  assert.notEqual(body2.suggestedColor, firstSuggestion, 'après 3 soumissions dans une couleur, l\'autre doit être suggérée');
+  assert.equal(body2.byColor[firstSuggestion].candidateWins, 3, 'la répartition par couleur doit refléter les 3 soumissions');
+  assert.equal(body2.byColor[firstSuggestion==='black'?'white':'black'].candidateWins, 0);
+});
+
 test('🌍 DIVERSITÉ DES OUVERTURES : GET /lab/job suggère la disposition la moins utilisée', async () => {
   await db.query(`UPDATE lab_jobs SET status='rejected', closed_at=now() WHERE status='open'`);
   const { token } = await signupUser(app);
@@ -253,6 +302,8 @@ test('🏆 PROMOTION : quand le SPRT confirme le candidat, le job se ferme et /l
   assert.equal(body.promoted, true);
   assert.deepEqual(body.weights, CANDIDATE);
   assert.equal(body.gamesConfirmed, minW, 'les soumissions après la clôture du job ne doivent plus être comptées');
+  assert.equal(body.byColor.black.candidateWins, minW, 'toutes ces soumissions ont candidateColor=black (défaut de basePayload)');
+  assert.equal(body.byColor.white.candidateWins, 0);
 
   const { token: t2 } = await signupUser(app);
   const nextJob = await app.inject({ method: 'POST', url: '/lab/job', headers: authed(t2),
