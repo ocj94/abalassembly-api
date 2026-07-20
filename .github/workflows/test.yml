@@ -51,3 +51,18 @@ jobs:
         # .env.test (committé) pointe déjà vers localhost:5432 / localhost:6379
         # avec les mêmes identifiants que les services CI ci-dessus — une seule
         # source de vérité pour la config de test, en local comme en CI.
+
+  engine-sync:
+    runs-on: ubuntu-latest
+    # Job séparé et rapide : compare src/engine.js à la dernière version en
+    # ligne du jeu (dépôt Abalassembly). Ne nécessite ni base de données ni
+    # dépendance npm — juste Node natif (fetch HTTPS + comparaison de texte).
+    # Détecte exactement le genre de divergence silencieuse qui a causé le
+    # bug OPP_DIR de la session du 19/07/2026, avant qu'elle ne se propage
+    # dans une vraie soumission du Labo distribué.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node scripts/check-engine-sync.js
