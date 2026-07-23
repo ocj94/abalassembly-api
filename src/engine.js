@@ -298,14 +298,24 @@ export function createEngine() {
       const toA = firstDest ? coordToABAPRO(firstDest.r, firstDest.c) : '';
       return fromA + fromB + toA;  // ex: e6e8f6
     } else {
-      // Coup en ligne : départ + arrivée de la bille de tête (ex: e5e6)
+      /* Coup en ligne : depart et arrivee de la bille de QUEUE (ex: e5e6).
+         L'Aba-Pro decrit le deplacement de la bille arriere du groupe, qui se
+         deplace toujours d'une seule case — c'est ce qui distingue cette
+         notation du Nacre, lequel note la queue puis la DESTINATION DE LA TETE
+         (donc une distance egale a la taille du groupe).
+         Ce code utilisait la bille de tete pour les deux extremites : tous les
+         coups en ligne de plus d'une bille etaient donc faux. Corrige cote jeu
+         le 21/07/2026 contre les sequences de reference de Saab, la correction
+         n'avait jamais ete reportee ici. Pour un groupe [a1,a2] avance vers a3,
+         l'Aba-Pro correct est « a1a2 » et non « a2a3 ». Sur une bille seule,
+         queue et tete se confondent : rien ne change. */
       const ax = sel.map(function(s){ return rcToAxial(s.r,s.c); });
       const sorted = ax.slice().sort(function(a,b){ return (a.q*dir.q+a.r*dir.r)-(b.q*dir.q+b.r*dir.r); });
-      const head = sorted[sorted.length-1];
-      const headRc = axialToRc(head.q, head.r);
-      const headDest = axialToRc(head.q + dir.q, head.r + dir.r);
-      const from = headRc ? coordToABAPRO(headRc.r, headRc.c) : '';
-      const to = headDest ? coordToABAPRO(headDest.r, headDest.c) : '';
+      const tail = sorted[0];
+      const tailRc = axialToRc(tail.q, tail.r);
+      const tailDest = axialToRc(tail.q + dir.q, tail.r + dir.r);
+      const from = tailRc ? coordToABAPRO(tailRc.r, tailRc.c) : '';
+      const to = tailDest ? coordToABAPRO(tailDest.r, tailDest.c) : '';
       return from + to;  // ex: e5e6
     }
   }

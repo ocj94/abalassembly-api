@@ -85,11 +85,18 @@ function extractAllFn(src, name) {
   return results;
 }
 
-// Normalise avant comparaison : espaces/retours à la ligne réduits, pour ne
-// pas signaler une différence purement cosmétique (indentation, etc.) comme
-// une vraie divergence de règle.
+// Normalise avant comparaison : commentaires retirés, espaces réduits. On ne
+// compare donc que le CODE. Les commentaires divergent legitimement entre les
+// deux copies — celle du jeu documente l'historique d'un bug, celle du serveur
+// documente le report — et les signaler comme divergences de regle rendrait ce
+// controle rouge en permanence. Un controle toujours rouge finit ignoré, ce qui
+// revient a ne pas l'avoir.
 function normalize(fnBody) {
-  return fnBody.replace(/\s+/g, ' ').trim();
+  return fnBody
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/(^|[^:'"])\/\/.*$/gm, '$1')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 async function main() {
