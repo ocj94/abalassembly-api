@@ -1,0 +1,52 @@
+# Pile complete pour tourner en local ou sur un VPS.
+# Chez un hebergeur gere (Scaleway, Clever Cloud, Render), on ne garde que
+# le service `api` : la base et Redis sont fournis par la plateforme.
+#
+#   cp .env.example .env   puis remplir JWT_SECRET
+#   docker compose up -d db redis
+#   docker compose run --rm api npm run migrate
+#   docker compose up -d api
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: abal
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-abal}
+      POSTGRES_DB: abalassembly
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U abal -d abalassembly"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    # Pas de ports exposes : seul le reseau interne y accede.
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "60", "1", "--appendonly", "no"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  api:
+    build: .
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://abal:${POSTGRES_PASSWORD:-abal}@db:5432/abalassembly
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      db: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    ports:
+      - "127.0.0.1:3000:3000"   # jamais expose directement : passer par un reverse proxy TLS
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  redisdata:
