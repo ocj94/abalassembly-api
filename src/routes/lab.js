@@ -5,8 +5,11 @@ import { sprtLLR, sprtBounds, SPRT_DEFAULTS } from '../sprt.js';
 import { LAYOUTS, LAYOUT_KEYS, layoutToStart } from '../layouts.js';
 
 // Miroir du EVAL_W par défaut côté client (index.html, AI_WORKER_CODE).
-const DEFAULT_WEIGHTS = { center: 6, cohesion: 4, edge: 8, mob: 2, iso: 18, dng: 14 };
-const WEIGHT_KEYS = ['center', 'cohesion', 'edge', 'mob', 'iso', 'dng'];
+// chain/fortress ajoutés en v1.54 côté client (Abalassembly) — mis à jour ici
+// en même temps, sinon un client à jour ne peut plus soumettre son champion
+// réel : additionalProperties:false + required rejetterait ses 2 clés en trop.
+const DEFAULT_WEIGHTS = { center: 6, cohesion: 4, edge: 8, mob: 2, iso: 18, dng: 14, chain: 10, fortress: 20 };
+const WEIGHT_KEYS = ['center', 'cohesion', 'edge', 'mob', 'iso', 'dng', 'chain', 'fortress'];
 
 // Un lot de résultats soumis d'un coup ne peut raisonnablement pas dépasser
 // ce nombre de parties pour un client JS dans une session : au-delà, on

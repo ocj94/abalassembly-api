@@ -21,7 +21,7 @@ before(async () => {
 after(async () => { await teardown(app); });
 
 function authed(token) { return { authorization: 'Bearer ' + token }; }
-const CANDIDATE = { center: 7, cohesion: 4, edge: 8, mob: 2, iso: 18, dng: 14 };
+const CANDIDATE = { center: 7, cohesion: 4, edge: 8, mob: 2, iso: 18, dng: 14, chain: 10, fortress: 20 };
 
 async function openJob(token) {
   const res = await app.inject({ method: 'POST', url: '/lab/job', headers: authed(token),
@@ -307,13 +307,13 @@ test('🏆 PROMOTION : quand le SPRT confirme le candidat, le job se ferme et /l
 
   const { token: t2 } = await signupUser(app);
   const nextJob = await app.inject({ method: 'POST', url: '/lab/job', headers: authed(t2),
-    payload: { candidateWeights: { center: 9, cohesion: 4, edge: 8, mob: 2, iso: 18, dng: 14 } } });
+    payload: { candidateWeights: { center: 9, cohesion: 4, edge: 8, mob: 2, iso: 18, dng: 14, chain: 10, fortress: 20 } } });
   assert.deepEqual(nextJob.json().job.baselineWeights, CANDIDATE);
 });
 
 test('POST /lab/job : schéma de poids invalide (clé manquante) → 400', async () => {
   const { token } = await signupUser(app);
   const res = await app.inject({ method: 'POST', url: '/lab/job', headers: authed(token),
-    payload: { candidateWeights: { center: 6, cohesion: 4 } } }); // il manque edge/mob/iso/dng
+    payload: { candidateWeights: { center: 6, cohesion: 4 } } }); // il manque edge/mob/iso/dng/chain/fortress
   assert.equal(res.statusCode, 400);
 });
