@@ -52,7 +52,7 @@ export function createEngine() {
        le correctif v2.41 d'Abalassembly. Si validateMove venait a etre
        exposee un jour sur une nouvelle route, cette garde serait alors la
        seule protection reelle : mieux vaut qu'elle soit deja la. */
-    if (!dir || !AX_DIRS.some(d => d.q === dir.q && d.r === dir.r)) return { valid: false };
+    if (!dir || !AX_DIRS.some(function(d){ return d.q === dir.q && d.r === dir.r; })) { return { valid:false, reason:'Direction invalide' }; }
     const opp=me==='black'?'white':'black';
     const line=selectionLine(sel); if(!line)return{valid:false};
     const ax=sel.map(s=>rcToAxial(s.r,s.c));
