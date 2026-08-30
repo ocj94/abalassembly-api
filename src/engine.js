@@ -40,6 +40,19 @@ export function createEngine() {
     return null;
   }
   function validateMove(sel,dir,me){
+    /* Renfort en profondeur, PAS un correctif de faille exploitable ici :
+       verifie que resolveAbaProToken (seul point d'entree reel
+       depuis /lab/result, cote routes/lab.js) ne peut renvoyer que des coups
+       deja construits avec une des 6 vraies directions -- confirme
+       directement : getAllMovesForColor ne genere jamais que des coups dont
+       dir appartient a AX_DIRS. validateMove elle-meme n'est meme pas
+       exposee dans l'objet retourne par createEngine(). Ajoutee uniquement
+       pour garder ce fichier a l'identique du moteur client (index.html),
+       dont la copie ETAIT exploitable (coup importe/duel externe) -- voir
+       le correctif v2.41 d'Abalassembly. Si validateMove venait a etre
+       exposee un jour sur une nouvelle route, cette garde serait alors la
+       seule protection reelle : mieux vaut qu'elle soit deja la. */
+    if (!dir || !AX_DIRS.some(d => d.q === dir.q && d.r === dir.r)) return { valid: false };
     const opp=me==='black'?'white':'black';
     const line=selectionLine(sel); if(!line)return{valid:false};
     const ax=sel.map(s=>rcToAxial(s.r,s.c));
