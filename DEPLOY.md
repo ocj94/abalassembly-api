@@ -1,3 +1,5 @@
+🇬🇧 [English version](DEPLOY.en.md)
+
 # Mise en service
 
 Ce backend est **dormant** : il n'a jamais tourné en production. Ce document
