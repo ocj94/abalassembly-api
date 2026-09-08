@@ -1,3 +1,5 @@
+🇬🇧 [English version](SECURITY.en.md)
+
 # Politique de sécurité
 
 Backend RGPD-ready pour Abalassembly (Node + Fastify + PostgreSQL + Redis).
