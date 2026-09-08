@@ -1,3 +1,5 @@
+🇬🇧 [English version](README.en.md)
+
 # abalassembly-api
 
 [![Tests](https://github.com/ocj94/abalassembly-api/actions/workflows/test.yml/badge.svg)](https://github.com/ocj94/abalassembly-api/actions/workflows/test.yml)
