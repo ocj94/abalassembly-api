@@ -57,6 +57,34 @@ npm test                                 # applies migrations then runs the suit
 | GET | `/mfa/status` | ✔ | account's MFA status |
 | GET | `/health` | — | liveness probe |
 
+### Alphabetical route index
+
+| Route | Method | Auth | Role |
+|---|---|---|---|
+| `/account` | DELETE | ✔ | **right to erasure** (real purge) |
+| `/account/export` | GET | ✔ | **portability** (JSON export) |
+| `/auth/login` | POST | — | authenticate → JWT |
+| `/auth/logout` | POST | ✔ | revoke the token |
+| `/auth/signup` | POST | — | create an account (argon2) |
+| `/game/history` | GET | ✔ | personal history (last 200 games) |
+| `/game/result` | POST | ✔ | record a game's result |
+| `/health` | GET | — | liveness probe |
+| `/lab/champion` | GET | — | current distributed-Lab weights (public) |
+| `/lab/contributors` | GET | — | contributor leaderboard, reliability (public) |
+| `/lab/job` | GET | ✔ | current collective test job + suggested layout |
+| `/lab/job` | POST | ✔ | propose a candidate to test |
+| `/lab/result` | POST | ✔ | submit a batch of results (verified by replay) |
+| `/mfa/disable` | POST | ✔ | disable it (requires a code) |
+| `/mfa/enable` | POST | ✔ | enable MFA (validates a first code) |
+| `/mfa/setup` | POST | ✔ | generate TOTP secret + QR (otpauth) |
+| `/mfa/status` | GET | ✔ | account's MFA status |
+| `/profile` | GET/PUT | ✔ | read / edit the profile |
+| `/progress` | GET/PUT | ✔ | sync XP/level/elo |
+| `/tournament/leaderboard` | GET | — | world leaderboard |
+| `/tournament/result` | POST | ✔ | submit a result |
+
+*Same content as the "Endpoints" table above, sorted by route instead of by domain — useful for looking up a specific route.*
+
 ## Distributed Lab (`/lab/*`)
 
 The game's Lab (see `index.html`) normally runs locally, in each player's `localStorage` — see the Abalassembly README for that mode. These routes enable a **collective** variant: several players contribute duel results to the same test, aggregated server-side by a real SPRT (Wald sequential test, Fishtest/Stockfish/[OpenBench](https://github.com/AndyGrant/OpenBench) methodology).
