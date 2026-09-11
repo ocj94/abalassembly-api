@@ -57,6 +57,34 @@ npm test                                 # applique les migrations puis lance la
 | GET | `/mfa/status` | ✔ | état MFA du compte |
 | GET | `/health` | — | sonde de vie |
 
+### Index alphabétique des routes
+
+| Route | Méthode | Auth | Rôle |
+|---|---|---|---|
+| `/account` | DELETE | ✔ | **droit à l'oubli** (purge réelle) |
+| `/account/export` | GET | ✔ | **portabilité** (export JSON) |
+| `/auth/login` | POST | — | authentifier → JWT |
+| `/auth/logout` | POST | ✔ | révoquer le jeton |
+| `/auth/signup` | POST | — | créer un compte (argon2) |
+| `/game/history` | GET | ✔ | historique personnel (200 dernières parties) |
+| `/game/result` | POST | ✔ | enregistrer le résultat d'une partie |
+| `/health` | GET | — | sonde de vie |
+| `/lab/champion` | GET | — | poids actuels du Labo distribué (public) |
+| `/lab/contributors` | GET | — | classement des contributeurs, fiabilité (public) |
+| `/lab/job` | GET | ✔ | job de test collectif en cours + disposition suggérée |
+| `/lab/job` | POST | ✔ | proposer un candidat à tester |
+| `/lab/result` | POST | ✔ | soumettre un lot de résultats (vérifié par rejeu) |
+| `/mfa/disable` | POST | ✔ | désactiver (exige un code) |
+| `/mfa/enable` | POST | ✔ | activer la MFA (valide un 1er code) |
+| `/mfa/setup` | POST | ✔ | générer secret TOTP + QR (otpauth) |
+| `/mfa/status` | GET | ✔ | état MFA du compte |
+| `/profile` | GET/PUT | ✔ | lire / modifier le profil |
+| `/progress` | GET/PUT | ✔ | synchroniser XP/niveau/elo |
+| `/tournament/leaderboard` | GET | — | classement mondial |
+| `/tournament/result` | POST | ✔ | soumettre un résultat |
+
+*Même contenu que le tableau « Endpoints » ci-dessus, trié par route plutôt que par domaine — pratique pour chercher une route précise.*
+
 ## Labo distribué (`/lab/*`)
 
 Le Labo du jeu (voir `index.html`) tourne normalement en local, dans le `localStorage` de chaque joueur — voir le README d'Abalassembly pour ce mode. Ces routes permettent une variante **collective** : plusieurs joueurs contribuent des résultats de duels au même test, agrégés par un vrai SPRT (test séquentiel de Wald, méthodologie Fishtest/Stockfish/[OpenBench](https://github.com/AndyGrant/OpenBench)) côté serveur.
