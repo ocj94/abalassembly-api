@@ -1,0 +1,42 @@
+# Suivi automatique des dépendances (Dependabot)
+#
+# Deux écosystèmes ici :
+#
+#  - npm : le backend a de vraies dépendances de production (fastify, argon2,
+#    pg, ioredis, jsonwebtoken…). Les correctifs de sécurité peuvent déjà
+#    remonter automatiquement ; ce fichier ajoute le suivi de version
+#    programmé, qui ne l'est pas par défaut.
+#
+#  - github-actions : les actions du CI sont du code tiers qui s'exécute avec
+#    accès au dépôt. C'est aussi le complément de l'épinglage par empreinte —
+#    épingler protège d'un déplacement d'étiquette, mais fige la version :
+#    sans suivi, une action épinglée ne reçoit jamais ses correctifs.
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps"
+    labels:
+      - "dépendances"
+    groups:
+      # Regroupe les mises à jour mineures et correctives en une seule PR :
+      # moins de bruit, et les montées de version majeures restent isolées
+      # pour être relues une par une.
+      mineures-et-correctives:
+        update-types:
+          - "minor"
+          - "patch"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"
+    labels:
+      - "dépendances"
