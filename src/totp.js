@@ -37,16 +37,25 @@ export function totpCode(secret, forTime = Date.now(), step = 30, digits = 6) {
   return String(bin % 10 ** digits).padStart(digits, '0');
 }
 
-// Vérifie un code en tolérant ±1 fenêtre (décalage d'horloge). Comparaison à temps constant.
-export function verifyTotp(secret, token, step = 30, window = 1) {
-  if (!secret || !token) return false;
+// Fenêtre de 30 s à laquelle appartient un code valide (±1 fenêtre tolérée pour
+// le décalage d'horloge), ou null. Comparaison à temps constant. La fenêtre sert
+// à refuser un code déjà utilisé : voir src/mfaCode.js.
+export function totpStep(secret, token, step = 30, window = 1) {
+  if (!secret || !token) return null;
   const clean = String(token).replace(/\s/g, '');
+  const now = Date.now();
   for (let w = -window; w <= window; w++) {
-    const expected = totpCode(secret, Date.now() + w * step * 1000, step);
+    const t = now + w * step * 1000;
+    const expected = totpCode(secret, t, step);
     if (expected.length === clean.length &&
-        crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(clean))) return true;
+        crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(clean))) return Math.floor(t / 1000 / step);
   }
-  return false;
+  return null;
+}
+// Vérifie un code sans se soucier de son réemploi (oracle des tests, outils).
+// Les routes passent par src/mfaCode.js, qui refuse un code déjà utilisé.
+export function verifyTotp(secret, token, step = 30, window = 1) {
+  return totpStep(secret, token, step, window) !== null;
 }
 
 // URI otpauth:// pour le QR code (à afficher côté admin lors de l'activation).

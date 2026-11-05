@@ -24,5 +24,10 @@ Merci d'inclure :
 - **Rate-limiting** Redis (anti-bruteforce)
 - Requêtes SQL **paramétrées** (injection impossible)
 - **Audit log** avec IP **hachée**, jamais en clair
-- Vérification systématique des soumissions du Labo distribué (rejeu moteur, authenticité de l'ouverture) — voir le README
+- Pas de démarrage sans `JWT_SECRET` solide ; compte relu en base à chaque requête (un compte supprimé n'a plus de session, le rôle du jeton n'est jamais cru)
+- MFA : un code ne sert qu'une fois, 5 codes faux bloquent 15 minutes, impossible de la retirer sans code ; actions d'administration réservées aux admins avec MFA, nommés sur le serveur (`scripts/admin.js`)
+- Limite de débit comptée sur la vraie adresse : `X-Forwarded-For` n'est cru que d'un relais déclaré (`TRUST_PROXY`)
+- Elo, victoires en ligne et XP des tournois jamais déclarés par le client
+- Labo distribué : une partie par envoi, rejouée et conclue, seul son résultat compte ; 3 contributeurs au moins ; validation d'un admin avant tout nouveau champion — voir le README
+- Chaque attaque de l'audit de novembre 2026 est rejouée par la suite de tests (`test/securite.test.js`, tests 🛡️ de `test/lab.test.js` et `test/ratelimit.test.js`)
 - Dependabot activé (alertes + mises à jour de sécurité automatiques sur les dépendances npm)

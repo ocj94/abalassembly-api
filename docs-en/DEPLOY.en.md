@@ -47,6 +47,47 @@ in the host's secrets manager. A secret that has passed through a config
 file, a repository, or a conversation should be considered compromised and
 regenerated before going live.
 
+Without `JWT_SECRET`, or with the example value, or with fewer than 32
+characters, the server **refuses to start**. Before November 2026 it started
+with a secret written in this public repository: anyone could forge a valid
+token for any account.
+
+## The proxy in front of the server (`TRUST_PROXY`)
+
+Rate limiting counts requests per address. Behind a proxy (Cloudflare, then
+the TLS reverse proxy), the client's address only arrives through the
+`X-Forwarded-For` header — which any client can also write. So the server
+only trusts that header when it comes from a declared proxy:
+
+- `TRUST_PROXY` empty (the default): nobody is trusted. Behind a proxy, every
+  request seems to come from it and they all share one limit: too strict, to
+  be set before opening, but never bypassable.
+- `TRUST_PROXY=127.0.0.1` (or a range, e.g. `172.16.0.0/12` for the Docker
+  gateway of `docker-compose.yml`): the address the reverse proxy reaches the
+  server from.
+- `TRUST_PROXY=true` is refused at startup.
+
+With Cloudflare in front of the reverse proxy, the latter must write the real
+address: accept only Cloudflare's ranges, and replace `X-Forwarded-For` with
+the `CF-Connecting-IP` header (with nginx: `set_real_ip_from` for each
+Cloudflare range, `real_ip_header CF-Connecting-IP`, then
+`proxy_set_header X-Forwarded-For $remote_addr`).
+
+## Administrators
+
+There is no bootstrap admin account anymore (`BOOTSTRAP_ADMIN_EMAIL` has no
+effect: signing up with that address gave the admin role to whoever came
+first, since nothing checks that you own the address). The future admin signs
+up normally, then, on the server:
+
+```bash
+node --env-file=.env scripts/admin.js nommer <email>     # or: retirer <email>
+```
+
+They must then enable MFA (`/mfa/setup` then `/mfa/enable`): admin actions
+refuse without it. The only one today is approving distributed-Lab candidates
+(`/lab/pending`, `/lab/job/:id/approve`, `/lab/job/:id/reject`).
+
 ## Before opening to the public
 
 None of the following is done, and each of these points carries real weight:
@@ -58,9 +99,15 @@ None of the following is done, and each of these points carries real weight:
   personal data: privacy notices, legal basis, retention periods, an erasure
   procedure. The code includes a purge job (`src/jobs/purge.js`), but nothing
   triggers it.
-- **A security audit.** The authentication layer — argon2id, JWT, TOTP, RBAC —
-  has been written but never faced real traffic. Dependencies need
-  re-auditing: they've aged without ever being used.
+- **Finishing the security audit.** A first audit (November 2026), run as if
+  players were connecting, found and fixed eight verified flaws: default JWT
+  secret, bypassable rate limiting, bootstrap admin, sessions of a deleted
+  account, MFA (removal without a code, replay, unlimited attempts), scores
+  declared by the client, distributed Lab, dependencies. Every attack is
+  replayed by the tests. Still open, less severe: weak passwords accepted
+  (`password`, `12345678`), signup and login response time revealing whether
+  an address has an account, usernames containing HTML (to be escaped on
+  display). An outside review is still advisable before opening.
 - **A reason.** Today, game-by-code already lets two people play without an
   account or a server. Until someone actually asks to pick up their games on
   another device, putting this online adds an attack surface and a

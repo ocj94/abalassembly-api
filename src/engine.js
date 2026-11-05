@@ -288,8 +288,11 @@ export function createEngine() {
     if (r < 0 || r > 8 || c < 0 || c >= ROWS[r]) return null;
     return { r: r, c: c };
   }
-  function resolveAbaProToken(token,color){
-    const legal=getAllMovesForColor(color);
+  // legalDeja (jeu v2.63) : les coups légaux déjà calculés par l'appelant pour ce
+  // plateau et ce camp. Le serveur ne s'en sert pas ; repris pour rester identique
+  // au jeu (scripts/check-engine-sync.js), le comportement sans lui est le même.
+  function resolveAbaProToken(token,color,legalDeja){
+    const legal=legalDeja||getAllMovesForColor(color);
     const m=legal.filter(function(mv){ return abaproOfficialLabels(mv).indexOf(token)!==-1; });
     if(!m.length)return null;
     m.sort(function(a,b){ return b.cells.length-a.cells.length; });  // ligne maximale si ambigu

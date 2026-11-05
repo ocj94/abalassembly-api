@@ -5,6 +5,7 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { makeApp, teardown, signupUser } from './helpers.js';
 import { db } from '../src/db.js';
+import { tournoiDuMois } from '../src/routes/tournament.js';
 
 let app;
 before(async () => { app = await makeApp(); });
@@ -34,18 +35,20 @@ test('export : structure complète et exacte pour un compte tout juste créé', 
 
 test('export : reflète la progression et les tournois réellement enregistrés', async () => {
   const { token } = await signupUser(app);
+  const mois = tournoiDuMois(); // le tournoi du mois en cours
   await app.inject({ method: 'PUT', url: '/progress', headers: authed(token),
-    payload: { xp: 4200, level: 7, streak: 3, elo: 1550 } });
+    payload: { xp: 4200, level: 7, streak: 3 } });
   await app.inject({ method: 'POST', url: '/tournament/result', headers: authed(token),
-    payload: { tournamentId: '2026-07', result: 'finaliste', xpAwarded: 300 } });
+    payload: { tournamentId: mois, result: 'finaliste' } });
 
   const res = await app.inject({ method: 'GET', url: '/account/export', headers: authed(token) });
   const body = res.json();
   assert.equal(body.progress.xp, 4200);
-  assert.equal(body.progress.elo, 1550);
+  assert.equal(body.progress.elo, 1200, 'l\'Elo appartient au serveur');
   assert.equal(body.tournaments.length, 1);
-  assert.equal(body.tournaments[0].tournament_id, '2026-07');
+  assert.equal(body.tournaments[0].tournament_id, mois);
   assert.equal(body.tournaments[0].result, 'finaliste');
+  assert.equal(body.tournaments[0].xp_awarded, 500, 'XP fixée par le serveur (barème du jeu)');
 });
 
 test('export : n\'expose jamais le hash de mot de passe ni le secret TOTP', async () => {
@@ -73,7 +76,7 @@ test('suppression : purge réellement en cascade (progress, tournois, parties) e
     payload: { result: 'win', mode: 'ai' } });
   await app.inject({ method: 'PUT', url: '/progress', headers: authed(token), payload: { xp: 100 } });
   await app.inject({ method: 'POST', url: '/tournament/result', headers: authed(token),
-    payload: { tournamentId: '2026-07', result: 'participant' } });
+    payload: { tournamentId: tournoiDuMois(), result: 'participant' } });
 
   const del = await app.inject({ method: 'DELETE', url: '/account', headers: authed(token) });
   assert.equal(del.statusCode, 200);

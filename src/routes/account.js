@@ -1,4 +1,5 @@
-import { requireAuth, hashIp } from '../auth.js';
+import { requireAuth, hashIp, tokenTtlSeconds } from '../auth.js';
+import { revokeToken } from '../redis.js';
 import { db } from '../db.js';
 
 export default async function (app) {
@@ -40,6 +41,11 @@ export default async function (app) {
        WHERE id = $1`,
       [uid]
     );
+    // Les sessions de ce compte tombent toutes : requireAuth relit le compte à
+    // chaque requête et refuse un compte supprimé. Avant, le jeton restait valable
+    // sept jours et recréait des données au nom du compte effacé. Le jeton courant
+    // est en plus révoqué explicitement.
+    if (req.user.jti) await revokeToken(req.user.jti, tokenTtlSeconds());
     // Trace l'action (sans données personnelles)
     try {
       await db.query(`INSERT INTO audit_log (user_id, action, ip_hash) VALUES ($1, 'account_delete', $2)`,

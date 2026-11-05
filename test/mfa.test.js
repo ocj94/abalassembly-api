@@ -84,8 +84,9 @@ test('login avec MFA activée : refusé sans code, refusé avec mauvais code, ac
   assert.equal(wrongOtp.statusCode, 401);
   assert.equal(wrongOtp.json().mfaRequired, true);
 
+  // le code de la fenêtre suivante : celui de l'activation ne resert plus (anti-rejeu)
   const rightOtp = await app.inject({ method: 'POST', url: '/auth/login',
-    payload: { email, password, otp: totpCode(secret) } });
+    payload: { email, password, otp: totpCode(secret, Date.now() + 30000) } });
   assert.equal(rightOtp.statusCode, 200);
   assert.ok(rightOtp.json().token);
 });
@@ -101,7 +102,7 @@ test('disable : exige un code valide, puis retire réellement la MFA (login sans
   assert.equal(badDisable.statusCode, 401, 'un attaquant avec le jeton mais sans le TOTP ne peut pas désactiver la MFA');
 
   const okDisable = await app.inject({ method: 'POST', url: '/mfa/disable', headers: authed(token),
-    payload: { otp: totpCode(secret) } });
+    payload: { otp: totpCode(secret, Date.now() + 30000) } });
   assert.equal(okDisable.statusCode, 200);
   assert.equal(okDisable.json().enabled, false);
 

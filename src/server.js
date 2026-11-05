@@ -3,6 +3,7 @@ import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
 import { redis } from './redis.js';
+import { jwtSecret } from './auth.js';
 
 import authRoutes from './routes/auth.js';
 import profileRoutes from './routes/profile.js';
@@ -13,9 +14,23 @@ import tournamentRoutes from './routes/tournament.js';
 import accountRoutes from './routes/account.js';
 import mfaRoutes from './routes/mfa.js';
 
+/* Quels relais croire pour l'adresse du client (en-tête X-Forwarded-For).
+   Avant : trustProxy: true, c'est-à-dire croire N'IMPORTE QUI. Chaque requête
+   pouvait annoncer sa propre adresse, et la limite de débit (comptée par
+   adresse) ne limitait plus rien. Désormais, rien n'est cru par défaut ;
+   derrière un relais, TRUST_PROXY donne son adresse (ou ses plages) ou le
+   nombre de relais — voir docs-fr/DEPLOY.fr.md. « true » est refusé. */
+export function trustProxyDe(v) {
+  v = String(v || '').trim();
+  if (!v || v === 'false' || v === '0') return false;
+  if (v === 'true') throw new Error('TRUST_PROXY=true ferait croire l\'adresse annoncée par n\'importe quel client : donner l\'adresse du relais (ex. 127.0.0.1) ou le nombre de relais (ex. 1)');
+  if (/^\d+$/.test(v)) return Number(v);
+  return v.split(',').map(x => x.trim()).filter(Boolean);
+}
+
 export async function build() {
-  // trustProxy: true → Fastify lit la vraie IP derrière Cloudflare
-  const app = Fastify({ logger: true, trustProxy: true, bodyLimit: 256 * 1024 });
+  jwtSecret(); // pas de secret de signature valable : on s'arrête ici, avant d'écouter
+  const app = Fastify({ logger: true, trustProxy: trustProxyDe(process.env.TRUST_PROXY), bodyLimit: 256 * 1024 });
 
   // En-têtes de sécurité HTTP
   await app.register(helmet, { contentSecurityPolicy: false });

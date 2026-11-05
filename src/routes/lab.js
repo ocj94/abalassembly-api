@@ -1,4 +1,4 @@
-import { requireAuth, hashIp } from '../auth.js';
+import { requireAuth, requireRole, requireMfa, hashIp } from '../auth.js';
 import { db } from '../db.js';
 import { createEngine } from '../engine.js';
 import { sprtLLR, sprtBounds, SPRT_DEFAULTS } from '../sprt.js';
@@ -11,17 +11,36 @@ import { LAYOUTS, LAYOUT_KEYS, layoutToStart } from '../layouts.js';
 const DEFAULT_WEIGHTS = { center: 6, cohesion: 4, edge: 8, mob: 2, iso: 18, dng: 14, chain: 10, fortress: 20 };
 const WEIGHT_KEYS = ['center', 'cohesion', 'edge', 'mob', 'iso', 'dng', 'chain', 'fortress'];
 
-// Un lot de résultats soumis d'un coup ne peut raisonnablement pas dépasser
-// ce nombre de parties pour un client JS dans une session : au-delà, on
-// rejette d'emblée sans même consulter la base — un garde-fou simple contre
-// un lot fabriqué de toutes pièces annonçant des centaines de victoires.
-const MAX_GAMES_PER_REPORT = 200;
+/* Bornes de chaque poids : celles du Labo du jeu (SPSA_MIN / SPSA_MAX, dans
+   index.html). Avant, -100..100 : un candidat aux poids tous négatifs (une IA qui
+   cherche à perdre) était accepté — et, faute d'autre garde-fou, promu. */
+const WEIGHT_MAX = { center: 40, cohesion: 40, edge: 40, mob: 20, iso: 60, dng: 60, chain: 40, fortress: 60 };
+
+/* Ce que le serveur compte, et rien d'autre (audit de novembre 2026).
+   Avant, un envoi annonçait un lot (« 200 victoires du candidat ») et une seule
+   partie témoin le justifiait ; une partie témoin d'UN coup légal suffisait
+   (« échantillon partiel accepté ») : un compte neuf faisait promouvoir n'importe
+   quels poids, champion public compris, en un seul envoi. Désormais :
+   - un envoi = une partie, entière, rejouée par le serveur ; c'est le rejeu qui
+     dit qui a gagné, et seule cette partie compte ;
+   - une partie compte si elle est conclue, selon les règles du Labo du jeu :
+     6 billes sorties, 3 billes d'avance (le Labo arrête la partie là), ou la limite
+     de LAB_PLIES_LIMITE demi-coups (alors celui qui mène gagne, égalité = nulle) ;
+     un coup joué après la fin, ou au-delà de la limite, fait refuser la partie ;
+   - le SPRT ne conclut qu'avec au moins LAB_MIN_CONTRIBUTEURS comptes différents ;
+   - un candidat confirmé passe « pending » : il ne devient le champion public
+     qu'après validation par un administrateur dont la MFA est active. Le rejeu
+     prouve qu'une partie est légale, pas qu'elle a été jouée par l'IA avec ces
+     poids : des comptes complices pourraient fabriquer des parties légales.
+     Un humain tranche avant que des poids partent chez tous les joueurs. */
+export const LAB_PLIES_LIMITE = 80;
+export const LAB_MIN_CONTRIBUTEURS = 3;
 
 const weightsSchema = {
   type: 'object',
   required: WEIGHT_KEYS,
   additionalProperties: false,
-  properties: Object.fromEntries(WEIGHT_KEYS.map(k => [k, { type: 'number', minimum: -100, maximum: 100 }]))
+  properties: Object.fromEntries(WEIGHT_KEYS.map(k => [k, { type: 'number', minimum: 0, maximum: WEIGHT_MAX[k] }]))
 };
 
 const jobSchema = {
@@ -36,13 +55,10 @@ const jobSchema = {
 const resultSchema = {
   body: {
     type: 'object',
-    required: ['jobId', 'candidateWins', 'draws', 'baselineWins', 'layout', 'sampleStart', 'sampleSeq', 'sampleWinner'],
+    required: ['jobId', 'layout', 'sampleStart', 'sampleSeq', 'sampleWinner'],
     additionalProperties: false,
     properties: {
-      jobId:         { type: 'integer', minimum: 1 },
-      candidateWins: { type: 'integer', minimum: 0 },
-      draws:         { type: 'integer', minimum: 0 },
-      baselineWins:  { type: 'integer', minimum: 0 },
+      jobId:          { type: 'integer', minimum: 1 },
       layout:         { type: 'string', enum: LAYOUT_KEYS },
       sampleStart:    { type: 'string', minLength: 3, maxLength: 400 },
       // Quel camp JOUE LE CANDIDAT dans la partie témoin — pas "qui commence"
@@ -57,9 +73,9 @@ const resultSchema = {
   }
 };
 
-// Rejoue la partie témoin avec le VRAI moteur (src/engine.js) pour confirmer
-// qu'il s'agit d'une suite de coups légaux menant réellement au résultat
-// annoncé. Ne rejoue pas la réflexion de l'IA (trop coûteux en masse) — mais
+// Rejoue la partie avec le VRAI moteur (src/engine.js) : suite de coups légaux,
+// partie conclue, et c'est le rejeu qui donne le vainqueur (champ winner du
+// verdict). Ne rejoue pas la réflexion de l'IA (trop coûteux en masse) — mais
 // une partie qui ne peut même pas être rejouée légalement est un signal de
 // fraude ou de bug sans ambiguïté, et un résultat annoncé qui ne correspond
 // pas à l'état final du plateau l'est tout autant.
@@ -91,30 +107,30 @@ function verifySampleGame({ layout, sampleStart, candidateColor, sampleSeq, samp
     let color = 'black';
     const tokens = String(sampleSeq).replace(/\d+\./g, ' ').trim().split(/\s+/).filter(Boolean);
     if (!tokens.length) return { ok: false, note: 'séquence de coups vide' };
-    if (tokens.length > 600) return { ok: false, note: 'séquence de coups invraisemblablement longue' };
+    if (tokens.length > LAB_PLIES_LIMITE) return { ok: false, note: `partie plus longue que la limite du Labo (${LAB_PLIES_LIMITE} demi-coups)` };
 
-    for (const tok of tokens) {
+    // la partie est finie : 6 billes sorties, ou 3 billes d'avance (règle du Labo)
+    const finie = () => E.capturedByBlack >= 6 || E.capturedByWhite >= 6 || Math.abs(E.capturedByBlack - E.capturedByWhite) >= 3;
+    for (let i = 0; i < tokens.length; i++) {
+      if (finie()) return { ok: false, note: `coups joués après la fin de la partie (demi-coup ${i + 1})` };
+      const tok = tokens[i];
       const mv = E.resolveAbaProToken(tok.toLowerCase(), color);
       if (!mv) return { ok: false, note: `coup illégal ou non résolu : "${tok}" (${color})` };
       E.applyMove(mv, color);
       color = color === 'black' ? 'white' : 'black';
     }
 
-    const capturedBlack = E.capturedByBlack, capturedWhite = E.capturedByWhite;
-    const blackWon = capturedBlack >= 6;   // Noirs gagnent en ayant capturé 6 pièces adverses
-    const whiteWon = capturedWhite >= 6;
-    if (!blackWon && !whiteWon) {
-      // Autorisé : un lot peut représenter une partie encore en cours au
-      // moment de l'échantillon plutôt qu'une partie achevée à 6 captures.
-      return { ok: true, note: 'partie légale, non conclue (échantillon partiel accepté)' };
+    const ecart = E.capturedByBlack - E.capturedByWhite;   // billes sorties par Noir, moins par Blanc
+    if (!finie() && tokens.length < LAB_PLIES_LIMITE) {
+      return { ok: false, note: 'partie non conclue : elle ne compte pas (ni 6 billes, ni 3 d\'avance, ni la limite de ' + LAB_PLIES_LIMITE + ' demi-coups)' };
     }
+    // vainqueur selon le plateau : celui qui a sorti le plus de billes (égalité : nulle)
     const candColor = candidateColor || 'black';
-    const candidateWon = (candColor === 'black' && blackWon) || (candColor === 'white' && whiteWon);
-    const actualWinner = blackWon === whiteWon ? 'draw' : (candidateWon ? 'candidate' : 'baseline');
+    const actualWinner = ecart === 0 ? 'draw' : ((ecart > 0) === (candColor === 'black') ? 'candidate' : 'baseline');
     if (actualWinner !== sampleWinner) {
       return { ok: false, note: `résultat annoncé (${sampleWinner}) incohérent avec la partie rejouée (${actualWinner})` };
     }
-    return { ok: true, note: 'partie légale et résultat confirmé' };
+    return { ok: true, winner: actualWinner, note: 'partie légale, conclue, résultat confirmé' };
   } catch (e) {
     return { ok: false, note: 'erreur de rejeu : ' + e.message };
   }
@@ -234,8 +250,10 @@ export default async function (app) {
     // (un seul test collectif à la fois : évite de fragmenter l'effort de tous
     // les Labos connectés sur des dizaines de candidats jamais confirmés).
     protectedRoutes.post('/job', { schema: jobSchema }, async (req, reply) => {
-      const { rows: openRows } = await db.query(`SELECT id FROM lab_jobs WHERE status = 'open' LIMIT 1`);
-      if (openRows[0]) return reply.code(409).send({ error: 'un job est déjà ouvert', jobId: openRows[0].id });
+      // un candidat en attente de validation bloque aussi : le prochain job doit
+      // partir du champion qui sortira de cette décision
+      const { rows: openRows } = await db.query(`SELECT id, status FROM lab_jobs WHERE status IN ('open','pending') LIMIT 1`);
+      if (openRows[0]) return reply.code(409).send({ error: openRows[0].status === 'open' ? 'un job est déjà ouvert' : 'un candidat attend la validation d\'un administrateur', jobId: openRows[0].id });
       const baseline = await currentChampion();
       const { rows } = await db.query(
         `INSERT INTO lab_jobs (baseline_weights, candidate_weights, created_by) VALUES ($1,$2,$3) RETURNING id, created_at`,
@@ -244,15 +262,12 @@ export default async function (app) {
       return { ok: true, job: { id: rows[0].id, baselineWeights: baseline, candidateWeights: req.body.candidateWeights, createdAt: rows[0].created_at } };
     });
 
-    // Soumet un lot de résultats pour le job en cours. Vérifie la partie
-    // témoin par rejeu avant de compter quoi que ce soit dans l'agrégat SPRT,
-    // et vérifie désormais aussi que la disposition de départ annoncée est
-    // authentique (voir verifySampleGame).
+    // Soumet UNE partie pour le job en cours. Elle est rejouée avant de compter
+    // quoi que ce soit dans l'agrégat SPRT (légalité, disposition de départ
+    // authentique, partie conclue) et c'est le rejeu qui donne le résultat
+    // compté (voir verifySampleGame).
     protectedRoutes.post('/result', { schema: resultSchema }, async (req, reply) => {
       const b = req.body;
-      const total = b.candidateWins + b.draws + b.baselineWins;
-      if (total < 1) return reply.code(400).send({ error: 'lot vide' });
-      if (total > MAX_GAMES_PER_REPORT) return reply.code(400).send({ error: 'lot invraisemblablement volumineux (max ' + MAX_GAMES_PER_REPORT + ')' });
 
       const { rows: jobRows } = await db.query(`SELECT id, status FROM lab_jobs WHERE id = $1`, [b.jobId]);
       const job = jobRows[0];
@@ -265,11 +280,13 @@ export default async function (app) {
       });
 
       const ipHash = hashIp(req.ip);
+      // une partie vérifiée compte pour une, dans la colonne que le rejeu désigne
+      const w = verdict.ok ? verdict.winner : null;
       await db.query(
         `INSERT INTO lab_results (job_id, user_id, candidate_wins, draws, baseline_wins,
           sample_start, candidate_color, sample_seq, sample_winner, layout, verified, verify_note, ip_hash)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
-        [b.jobId, req.user.sub, b.candidateWins, b.draws, b.baselineWins,
+        [b.jobId, req.user.sub, w === 'candidate' ? 1 : 0, w === 'draw' ? 1 : 0, w === 'baseline' ? 1 : 0,
          b.sampleStart, b.candidateColor || 'black', b.sampleSeq, b.sampleWinner, b.layout,
          verdict.ok, verdict.note, ipHash]);
 
@@ -284,11 +301,56 @@ export default async function (app) {
       const llr = sprtLLR(W, D, L);
       const { up, lo } = sprtBounds();
 
-      let outcome = 'open';
-      if (llr >= up) { outcome = 'promoted'; await db.query(`UPDATE lab_jobs SET status='promoted', closed_at=now() WHERE id=$1`, [b.jobId]); }
-      else if (llr <= lo) { outcome = 'rejected'; await db.query(`UPDATE lab_jobs SET status='rejected', closed_at=now() WHERE id=$1`, [b.jobId]); }
+      const { rows: cRows } = await db.query(
+        `SELECT COUNT(DISTINCT user_id) AS n FROM lab_results WHERE job_id = $1 AND verified = true`, [b.jobId]);
+      const contributeurs = Number(cRows[0].n);
 
-      return { ok: true, counted: true, pooled: { candidateWins: W, draws: D, baselineWins: L }, llr, outcome };
+      let outcome = 'open';
+      if (llr >= up && contributeurs >= LAB_MIN_CONTRIBUTEURS) {
+        // confirmé : en attente de validation humaine, PAS encore champion
+        outcome = 'pending';
+        await db.query(`UPDATE lab_jobs SET status='pending' WHERE id=$1 AND status='open'`, [b.jobId]);
+      } else if (llr <= lo && contributeurs >= LAB_MIN_CONTRIBUTEURS) {
+        outcome = 'rejected';
+        await db.query(`UPDATE lab_jobs SET status='rejected', closed_at=now() WHERE id=$1 AND status='open'`, [b.jobId]);
+      }
+
+      return { ok: true, counted: true, game: verdict.winner, pooled: { candidateWins: W, draws: D, baselineWins: L },
+        contributors: contributeurs, llr, outcome };
     });
+  });
+
+  // ─── Administration : la décision humaine sur un candidat confirmé ───
+  // Rôle admin (relu en base) ET MFA active sur ce compte.
+  app.register(async function (adminRoutes) {
+    adminRoutes.addHook('preHandler', requireAuth);
+    adminRoutes.addHook('preHandler', requireRole('admin'));
+    adminRoutes.addHook('preHandler', requireMfa);
+
+    adminRoutes.get('/pending', async () => {
+      const { rows } = await db.query(
+        `SELECT j.id, j.baseline_weights, j.candidate_weights, j.created_at,
+                COALESCE(SUM(r.candidate_wins),0) AS w, COALESCE(SUM(r.draws),0) AS d, COALESCE(SUM(r.baseline_wins),0) AS l,
+                COUNT(DISTINCT r.user_id) AS contributeurs
+           FROM lab_jobs j LEFT JOIN lab_results r ON r.job_id = j.id AND r.verified = true
+          WHERE j.status = 'pending' GROUP BY j.id ORDER BY j.created_at`);
+      return { jobs: rows.map(r => ({ id: r.id, baselineWeights: r.baseline_weights, candidateWeights: r.candidate_weights,
+        createdAt: r.created_at, pooled: { candidateWins: Number(r.w), draws: Number(r.d), baselineWins: Number(r.l) },
+        contributors: Number(r.contributeurs) })) };
+    });
+
+    const decider = (statut) => async (req, reply) => {
+      const id = Number(req.params.id);
+      if (!Number.isInteger(id) || id < 1) return reply.code(400).send({ error: 'identifiant invalide' });
+      const { rows } = await db.query(
+        `UPDATE lab_jobs SET status = $2, decided_by = $3, decided_at = now(), closed_at = now()
+          WHERE id = $1 AND status = 'pending' RETURNING id`, [id, statut, req.user.sub]);
+      if (!rows[0]) return reply.code(409).send({ error: 'aucun candidat en attente de validation avec cet identifiant' });
+      try { await db.query(`INSERT INTO audit_log (user_id, action, ip_hash) VALUES ($1, $2, $3)`,
+        [req.user.sub, statut === 'promoted' ? 'lab_approve' : 'lab_reject', hashIp(req.ip)]); } catch (e) {}
+      return { ok: true, id, status: statut };
+    };
+    adminRoutes.post('/job/:id/approve', decider('promoted'));
+    adminRoutes.post('/job/:id/reject', decider('rejected'));
   });
 }

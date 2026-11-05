@@ -1,5 +1,5 @@
 import { hashPassword, verifyPassword, issueToken, hashIp, requireAuth, tokenTtlSeconds } from '../auth.js';
-import { verifyTotp } from '../totp.js';
+import { verifierCodeMfa } from '../mfaCode.js';
 import { revokeToken } from '../redis.js';
 import { db } from '../db.js';
 
@@ -31,15 +31,16 @@ export default async function (app) {
   app.post('/signup', { schema: credentialsSchema }, async (req, reply) => {
     const { email, password, username } = req.body;
     const hash = await hashPassword(password);
-    // Le tout premier compte (ou l'email bootstrap) reçoit le rôle admin
-    const bootstrap = process.env.BOOTSTRAP_ADMIN_EMAIL || '';
-    const role = (bootstrap && email.toLowerCase() === bootstrap.toLowerCase()) ? 'admin' : 'player';
+    // Toujours 'player'. Avant, l'inscription avec BOOTSTRAP_ADMIN_EMAIL donnait le
+    // rôle admin — à quiconque s'inscrivait le premier avec cette adresse, puisque
+    // rien ne vérifie qu'on possède l'adresse. Un admin se nomme désormais sur le
+    // serveur lui-même : scripts/admin.js.
     try {
       const { rows } = await db.query(
         `INSERT INTO users (email, password_hash, username, role)
-         VALUES ($1, $2, $3, $4)
+         VALUES ($1, $2, $3, 'player')
          RETURNING id, username, email, country, role`,
-        [email.toLowerCase(), hash, username || email.split('@')[0], role]
+        [email.toLowerCase(), hash, username || email.split('@')[0]]
       );
       const user = rows[0];
       await audit(user.id, 'signup', req);
@@ -67,9 +68,10 @@ export default async function (app) {
     if (u.totp_enabled) {
       const otp = req.body.otp;
       if (!otp) return reply.code(401).send({ error: 'code MFA requis', mfaRequired: true });
-      if (!verifyTotp(u.totp_secret, otp)) {
+      const v = await verifierCodeMfa(u.id, u.totp_secret, otp);
+      if (!v.ok) {
         await audit(u.id, 'login_mfa_fail', req);
-        return reply.code(401).send({ error: 'code MFA invalide', mfaRequired: true });
+        return reply.code(v.code).send({ error: v.error, mfaRequired: true });
       }
     }
     delete u.password_hash; delete u.totp_secret;

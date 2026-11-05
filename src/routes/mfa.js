@@ -1,5 +1,6 @@
 import { requireAuth } from '../auth.js';
-import { generateSecret, otpauthUri, verifyTotp } from '../totp.js';
+import { generateSecret, otpauthUri } from '../totp.js';
+import { verifierCodeMfa } from '../mfaCode.js';
 import { db } from '../db.js';
 
 // Gestion du MFA (TOTP). Toutes les routes exigent d'être authentifié.
@@ -9,9 +10,16 @@ export default async function (app) {
 
   // Étape 1 : générer un secret et l'URI otpauth (à scanner dans l'app d'authentification).
   // Le secret est stocké mais MFA reste désactivée tant que /enable n'a pas validé un code.
-  app.post('/setup', async (req) => {
+  // Refusé quand la MFA est déjà active : avant, cet appel remplaçait le secret et
+  // DÉSACTIVAIT la MFA sans demander de code — un jeton volé suffisait à la retirer.
+  // Pour changer d'appareil : /disable (avec un code), puis /setup.
+  app.post('/setup', async (req, reply) => {
+    const { rows: cur } = await db.query(`SELECT totp_enabled FROM users WHERE id = $1`, [req.user.sub]);
+    if (cur[0] && cur[0].totp_enabled) {
+      return reply.code(409).send({ error: 'MFA déjà active : la désactiver d\'abord avec un code (/mfa/disable)' });
+    }
     const secret = generateSecret();
-    await db.query(`UPDATE users SET totp_secret = $2, totp_enabled = false WHERE id = $1`,
+    await db.query(`UPDATE users SET totp_secret = $2, totp_enabled = false, totp_last_step = NULL WHERE id = $1`,
       [req.user.sub, secret]);
     const { rows } = await db.query(`SELECT email FROM users WHERE id = $1`, [req.user.sub]);
     const account = (rows[0] && rows[0].email) || req.user.name || 'compte';
@@ -25,7 +33,8 @@ export default async function (app) {
     const { rows } = await db.query(`SELECT totp_secret FROM users WHERE id = $1`, [req.user.sub]);
     const secret = rows[0] && rows[0].totp_secret;
     if (!secret) return reply.code(400).send({ error: 'aucun secret : appeler /mfa/setup d\'abord' });
-    if (!verifyTotp(secret, req.body.otp)) return reply.code(401).send({ error: 'code invalide' });
+    const v = await verifierCodeMfa(req.user.sub, secret, req.body.otp);
+    if (!v.ok) return reply.code(v.code).send({ error: v.error });
     await db.query(`UPDATE users SET totp_enabled = true WHERE id = $1`, [req.user.sub]);
     return { ok: true, enabled: true };
   });
@@ -37,8 +46,9 @@ export default async function (app) {
     const { rows } = await db.query(`SELECT totp_secret, totp_enabled FROM users WHERE id = $1`, [req.user.sub]);
     const u = rows[0];
     if (!u || !u.totp_enabled) return { ok: true, enabled: false };
-    if (!verifyTotp(u.totp_secret, req.body.otp)) return reply.code(401).send({ error: 'code invalide' });
-    await db.query(`UPDATE users SET totp_secret = NULL, totp_enabled = false WHERE id = $1`, [req.user.sub]);
+    const v = await verifierCodeMfa(req.user.sub, u.totp_secret, req.body.otp);
+    if (!v.ok) return reply.code(v.code).send({ error: v.error });
+    await db.query(`UPDATE users SET totp_secret = NULL, totp_enabled = false, totp_last_step = NULL WHERE id = $1`, [req.user.sub]);
     return { ok: true, enabled: false };
   });
 

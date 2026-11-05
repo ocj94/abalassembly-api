@@ -39,16 +39,18 @@ npm test                                 # applique les migrations puis lance la
 | POST | `/auth/login` | — | authentifier → JWT |
 | POST | `/auth/logout` | ✔ | révoquer le jeton |
 | GET/PUT | `/profile` | ✔ | lire / modifier le profil |
-| GET/PUT | `/progress` | ✔ | synchroniser XP/niveau/elo |
+| GET/PUT | `/progress` | ✔ | synchroniser XP/niveau/série (l'Elo est tenu par le serveur) |
 | POST | `/game/result` | ✔ | enregistrer le résultat d'une partie |
 | GET | `/game/history` | ✔ | historique personnel (200 dernières parties) |
-| POST | `/tournament/result` | ✔ | soumettre un résultat |
+| POST | `/tournament/result` | ✔ | soumettre un résultat du tournoi du mois (XP fixée par le serveur) |
 | GET | `/tournament/leaderboard` | — | classement mondial |
 | GET | `/lab/champion` | — | poids actuels du Labo distribué (public) |
 | GET | `/lab/contributors` | — | classement des contributeurs, fiabilité (public) |
 | GET | `/lab/job` | ✔ | job de test collectif en cours + disposition suggérée |
 | POST | `/lab/job` | ✔ | proposer un candidat à tester |
-| POST | `/lab/result` | ✔ | soumettre un lot de résultats (vérifié par rejeu) |
+| POST | `/lab/result` | ✔ | soumettre une partie (rejouée ; seule elle compte) |
+| GET | `/lab/pending` | admin + MFA | candidats confirmés en attente de validation |
+| POST | `/lab/job/:id/approve` · `/reject` | admin + MFA | faire d'un candidat le champion, ou l'écarter |
 | GET | `/account/export` | ✔ | **portabilité** (export JSON) |
 | DELETE | `/account` | ✔ | **droit à l'oubli** (purge réelle) |
 | POST | `/mfa/setup` | ✔ | générer secret TOTP + QR (otpauth) |
@@ -73,15 +75,17 @@ npm test                                 # applique les migrations puis lance la
 | `/lab/contributors` | GET | — | classement des contributeurs, fiabilité (public) |
 | `/lab/job` | GET | ✔ | job de test collectif en cours + disposition suggérée |
 | `/lab/job` | POST | ✔ | proposer un candidat à tester |
-| `/lab/result` | POST | ✔ | soumettre un lot de résultats (vérifié par rejeu) |
+| `/lab/job/:id/approve` · `/reject` | POST | admin + MFA | faire d'un candidat le champion, ou l'écarter |
+| `/lab/pending` | GET | admin + MFA | candidats confirmés en attente de validation |
+| `/lab/result` | POST | ✔ | soumettre une partie (rejouée ; seule elle compte) |
 | `/mfa/disable` | POST | ✔ | désactiver (exige un code) |
 | `/mfa/enable` | POST | ✔ | activer la MFA (valide un 1er code) |
 | `/mfa/setup` | POST | ✔ | générer secret TOTP + QR (otpauth) |
 | `/mfa/status` | GET | ✔ | état MFA du compte |
 | `/profile` | GET/PUT | ✔ | lire / modifier le profil |
-| `/progress` | GET/PUT | ✔ | synchroniser XP/niveau/elo |
+| `/progress` | GET/PUT | ✔ | synchroniser XP/niveau/série (l'Elo est tenu par le serveur) |
 | `/tournament/leaderboard` | GET | — | classement mondial |
-| `/tournament/result` | POST | ✔ | soumettre un résultat |
+| `/tournament/result` | POST | ✔ | soumettre un résultat du tournoi du mois (XP fixée par le serveur) |
 
 *Même contenu que le tableau « Endpoints » ci-dessus, trié par route plutôt que par domaine — pratique pour chercher une route précise.*
 
@@ -89,7 +93,7 @@ npm test                                 # applique les migrations puis lance la
 
 Le Labo du jeu (voir `index.html`) tourne normalement en local, dans le `localStorage` de chaque joueur — voir le README d'Abalassembly pour ce mode. Ces routes permettent une variante **collective** : plusieurs joueurs contribuent des résultats de duels au même test, agrégés par un vrai SPRT (test séquentiel de Wald, méthodologie Fishtest/Stockfish/[OpenBench](https://github.com/AndyGrant/OpenBench)) côté serveur.
 
-**Comment ça marche** : un candidat (nouveau jeu de poids d'évaluation) est proposé via `POST /lab/job`. Les joueurs y contribuent via `POST /lab/result` — chaque lot doit inclure une partie témoin (disposition + position de départ + séquence de coups) que le serveur **rejoue avec le vrai moteur** (`src/engine.js`) avant de compter quoi que ce soit. Quand le LLR cumulé de tous les contributeurs franchit le seuil, le candidat est promu et devient le nouveau champion, consultable via `GET /lab/champion` (public, sans authentification).
+**Comment ça marche** : un candidat (nouveau jeu de poids d'évaluation) est proposé via `POST /lab/job`. Les joueurs y contribuent via `POST /lab/result` — **un envoi = une partie entière** (disposition + position de départ + séquence de coups), que le serveur **rejoue avec le vrai moteur** (`src/engine.js`) : c'est le rejeu qui dit qui a gagné, et seule cette partie compte. Quand le LLR cumulé franchit le seuil **avec au moins 3 contributeurs différents**, le candidat passe **en attente** : il ne devient le champion public (`GET /lab/champion`, sans authentification) qu'après validation par un administrateur dont la MFA est active (`POST /lab/job/:id/approve`, ou `/reject` pour l'écarter).
 
 **Diversité des ouvertures** (idée reprise d'OpenBench) : chaque soumission indique laquelle des **5 dispositions officielles** (`standard`/`belgian`/`german`/`dutch`/`swiss`, voir `src/layouts.js`) sa partie témoin utilise. `GET /lab/job` suggère la disposition la **moins couverte jusqu'ici pour ce job** (équilibrage glouton) — quel que soit l'ordre de connexion des contributeurs, les 5 ouvertures finissent naturellement représentées, au lieu qu'un candidat se sur-spécialise sur une seule position de départ.
 
@@ -102,19 +106,23 @@ Le Labo du jeu (voir `index.html`) tourne normalement en local, dans le `localSt
 **Anti-fraude, ce qui est réellement vérifié :**
 - **Légalité** : chaque coup de la partie témoin est validé contre les règles réelles du jeu — un coup inventé de toutes pièces est rejeté, jamais compté dans l'agrégat (voir `test/lab.test.js`, tests marqués 🛡️).
 - **Authenticité de l'ouverture** : la position de départ annoncée doit correspondre **exactement** à la disposition officielle revendiquée — impossible de prétendre tester "standard" en jouant en réalité depuis une position truquée.
-- **Cohérence du résultat** : si la partie témoin se conclut (6 captures), le vainqueur annoncé doit correspondre à l'état réel du plateau après rejeu, correctement interprété selon la couleur du candidat — annoncer une victoire qui ne s'est pas produite (ou mal inverser le résultat pour un candidat Blanc) est détecté.
-- **Volume plausible** : un lot annonçant des centaines de parties d'un coup est rejeté d'emblée (`MAX_GAMES_PER_REPORT`), sans même toucher la base.
-- **Ce qui n'est PAS vérifié** : la réflexion de l'IA elle-même (recherche/évaluation) n'est pas rejouée pour chaque soumission — seulement la légalité, l'authenticité de l'ouverture et le résultat de la partie témoin. Un lot qui invente des scores plausibles mais soumet une partie témoin légale et cohérente n'est pas détecté par ce mécanisme ; c'est une limite assumée, pas un oubli. De même, rien ne garantit côté serveur que Blanc a réellement utilisé les poids de référence plutôt que n'importe quel autre choix — cette vérification-là n'existe que côté Labo local, qui recalcule chaque coup lui-même.
+- **Partie conclue, selon les règles du Labo du jeu** : 6 billes sorties, 3 billes d'avance (le Labo arrête la partie là), ou la limite de 80 demi-coups (celui qui mène gagne, égalité = nulle). Une partie inachevée ne compte pas ; un coup joué après la fin, ou au-delà de 80 demi-coups, fait refuser la partie.
+- **Cohérence du résultat** : le vainqueur annoncé doit être celui du rejeu, correctement interprété selon la couleur du candidat — annoncer une victoire qui ne s'est pas produite (ou mal inverser le résultat pour un candidat Blanc) est détecté. Ce que le serveur compte, c'est le résultat du rejeu, jamais un nombre annoncé par le client.
+- **Poids bornés** : chaque poids d'un candidat reste dans les bornes du Labo du jeu (0 à `SPSA_MAX`) — une IA aux poids négatifs, qui chercherait à perdre, est refusée d'emblée.
+- **Une décision humaine** : au moins 3 contributeurs pour que le SPRT conclue, puis la validation d'un administrateur avec MFA avant que des poids partent chez tous les joueurs.
+- **Ce qui n'est PAS vérifié** : la réflexion de l'IA elle-même (recherche/évaluation) n'est pas rejouée pour chaque soumission — seulement la légalité, l'authenticité de l'ouverture et le résultat de la partie. Des comptes complices qui fabriquent des parties légales ne sont pas détectés par ce mécanisme : c'est précisément pourquoi un candidat confirmé attend une validation humaine. Avant l'audit de novembre 2026, une partie d'UN coup légal justifiait un lot de 200 victoires annoncées, et un compte neuf faisait promouvoir n'importe quels poids en un seul envoi. De même, rien ne garantit côté serveur que Blanc a réellement utilisé les poids de référence plutôt que n'importe quel autre choix — cette vérification-là n'existe que côté Labo local, qui recalcule chaque coup lui-même.
 
 ## Sécurité & RGPD intégrés
 
 
 
 - Mots de passe **argon2id**, jamais en clair
-- **JWT** avec `jti` révocable (logout via Redis)
-- **RBAC** : middleware `requireRole('admin')`
-- **MFA TOTP** (RFC 6238, sans dépendance) : `/mfa/*`, vérifié au login si activée
-- **Rate-limiting** Redis (anti-bruteforce)
+- **JWT** avec `jti` révocable (logout via Redis) ; **pas de démarrage sans `JWT_SECRET`** solide (32 caractères au moins, jamais la valeur d'exemple)
+- Compte **relu en base à chaque requête** : un compte supprimé n'a plus aucune session, un rôle retiré s'applique tout de suite (le rôle écrit dans le jeton n'est jamais cru)
+- **RBAC** : middleware `requireRole('admin')` ; un admin se nomme sur le serveur (`scripts/admin.js`), jamais par l'inscription, et ses actions exigent la **MFA**
+- **MFA TOTP** (RFC 6238, sans dépendance) : `/mfa/*`, vérifiée au login si activée ; un code ne sert qu'une fois, 5 codes faux bloquent la MFA du compte 15 minutes, `/mfa/setup` ne peut plus la retirer
+- **Rate-limiting** Redis (anti-bruteforce), compté sur la vraie adresse : `X-Forwarded-For` n'est cru que d'un relais déclaré (`TRUST_PROXY`)
+- **Scores** : l'Elo, les victoires en ligne et l'XP des tournois ne sont jamais déclarés par le client
 - **Validation de schéma** Fastify (rejette les entrées malformées)
 - Requêtes SQL **paramétrées** (injection impossible)
 - **Audit log** avec IP **hachée** (jamais en clair)

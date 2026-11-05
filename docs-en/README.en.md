@@ -39,16 +39,18 @@ npm test                                 # applies migrations then runs the suit
 | POST | `/auth/login` | — | authenticate → JWT |
 | POST | `/auth/logout` | ✔ | revoke the token |
 | GET/PUT | `/profile` | ✔ | read / edit the profile |
-| GET/PUT | `/progress` | ✔ | sync XP/level/elo |
+| GET/PUT | `/progress` | ✔ | sync XP/level/streak (Elo is kept by the server) |
 | POST | `/game/result` | ✔ | record a game's result |
 | GET | `/game/history` | ✔ | personal history (last 200 games) |
-| POST | `/tournament/result` | ✔ | submit a result |
+| POST | `/tournament/result` | ✔ | submit a result of this month's tournament (XP set by the server) |
 | GET | `/tournament/leaderboard` | — | world leaderboard |
 | GET | `/lab/champion` | — | current distributed-Lab weights (public) |
 | GET | `/lab/contributors` | — | contributor leaderboard, reliability (public) |
 | GET | `/lab/job` | ✔ | current collective test job + suggested layout |
 | POST | `/lab/job` | ✔ | propose a candidate to test |
-| POST | `/lab/result` | ✔ | submit a batch of results (verified by replay) |
+| POST | `/lab/result` | ✔ | submit one game (replayed; only it counts) |
+| GET | `/lab/pending` | admin + MFA | confirmed candidates awaiting approval |
+| POST | `/lab/job/:id/approve` · `/reject` | admin + MFA | make a candidate the champion, or discard it |
 | GET | `/account/export` | ✔ | **portability** (JSON export) |
 | DELETE | `/account` | ✔ | **right to erasure** (real purge) |
 | POST | `/mfa/setup` | ✔ | generate TOTP secret + QR (otpauth) |
@@ -73,15 +75,17 @@ npm test                                 # applies migrations then runs the suit
 | `/lab/contributors` | GET | — | contributor leaderboard, reliability (public) |
 | `/lab/job` | GET | ✔ | current collective test job + suggested layout |
 | `/lab/job` | POST | ✔ | propose a candidate to test |
-| `/lab/result` | POST | ✔ | submit a batch of results (verified by replay) |
+| `/lab/job/:id/approve` · `/reject` | POST | admin + MFA | make a candidate the champion, or discard it |
+| `/lab/pending` | GET | admin + MFA | confirmed candidates awaiting approval |
+| `/lab/result` | POST | ✔ | submit one game (replayed; only it counts) |
 | `/mfa/disable` | POST | ✔ | disable it (requires a code) |
 | `/mfa/enable` | POST | ✔ | enable MFA (validates a first code) |
 | `/mfa/setup` | POST | ✔ | generate TOTP secret + QR (otpauth) |
 | `/mfa/status` | GET | ✔ | account's MFA status |
 | `/profile` | GET/PUT | ✔ | read / edit the profile |
-| `/progress` | GET/PUT | ✔ | sync XP/level/elo |
+| `/progress` | GET/PUT | ✔ | sync XP/level/streak (Elo is kept by the server) |
 | `/tournament/leaderboard` | GET | — | world leaderboard |
-| `/tournament/result` | POST | ✔ | submit a result |
+| `/tournament/result` | POST | ✔ | submit a result of this month's tournament (XP set by the server) |
 
 *Same content as the "Endpoints" table above, sorted by route instead of by domain — useful for looking up a specific route.*
 
@@ -89,7 +93,7 @@ npm test                                 # applies migrations then runs the suit
 
 The game's Lab (see `index.html`) normally runs locally, in each player's `localStorage` — see the Abalassembly README for that mode. These routes enable a **collective** variant: several players contribute duel results to the same test, aggregated server-side by a real SPRT (Wald sequential test, Fishtest/Stockfish/[OpenBench](https://github.com/AndyGrant/OpenBench) methodology).
 
-**How it works**: a candidate (new evaluation weight set) is proposed via `POST /lab/job`. Players contribute to it via `POST /lab/result` — each batch must include a witness game (layout + starting position + move sequence) that the server **replays with the real engine** (`src/engine.js`) before counting anything. When the cumulative LLR across all contributors crosses the threshold, the candidate is promoted and becomes the new champion, available via `GET /lab/champion` (public, no authentication).
+**How it works**: a candidate (new evaluation weight set) is proposed via `POST /lab/job`. Players contribute to it via `POST /lab/result` — **one submission = one whole game** (layout + starting position + move sequence), which the server **replays with the real engine** (`src/engine.js`): the replay decides who won, and only that game counts. When the cumulative LLR crosses the threshold **with at least 3 different contributors**, the candidate goes **pending**: it only becomes the public champion (`GET /lab/champion`, no authentication) once an administrator with MFA enabled approves it (`POST /lab/job/:id/approve`, or `/reject` to discard it).
 
 **Opening diversity** (idea borrowed from OpenBench): each submission states which of the **5 official layouts** (`standard`/`belgian`/`german`/`dutch`/`swiss`, see `src/layouts.js`) its witness game uses. `GET /lab/job` suggests the layout **least covered so far for this job** (greedy balancing) — whatever order contributors connect in, all 5 openings naturally end up represented, instead of a candidate over-specializing on a single starting position.
 
@@ -102,17 +106,21 @@ The game's Lab (see `index.html`) normally runs locally, in each player's `local
 **Anti-fraud — what's actually verified:**
 - **Legality**: every move of the witness game is validated against the real rules of the game — a move invented out of thin air is rejected, never counted in the aggregate (see `test/lab.test.js`, tests marked 🛡️).
 - **Opening authenticity**: the declared starting position must **exactly** match the claimed official layout — no claiming to test "standard" while actually playing from a rigged position.
-- **Result consistency**: if the witness game concludes (6 captures), the announced winner must match the real board state after replay, correctly interpreted based on the candidate's color — announcing a win that didn't happen (or wrongly inverting the result for a White candidate) is detected.
-- **Plausible volume**: a batch announcing hundreds of games at once is rejected outright (`MAX_GAMES_PER_REPORT`), without even touching the database.
-- **What is NOT verified**: the AI's own thinking (search/evaluation) isn't replayed for every submission — only the legality, opening authenticity, and result of the witness game. A batch that invents plausible scores but submits a legal, consistent witness game isn't caught by this mechanism; that's an acknowledged limit, not an oversight. Likewise, nothing on the server guarantees that White actually used the reference weights rather than any other choice — that check only exists in the local Lab, which recomputes every move itself.
+- **A finished game, by the game Lab's rules**: 6 marbles pushed off, a 3-marble lead (the Lab stops the game there), or the 80-ply limit (the leader wins, equal = draw). An unfinished game doesn't count; a move played after the end, or beyond 80 plies, gets the game refused.
+- **Result consistency**: the announced winner must be the replay's, correctly interpreted based on the candidate's color — announcing a win that didn't happen (or wrongly inverting the result for a White candidate) is detected. What the server counts is the replay's result, never a number announced by the client.
+- **Bounded weights**: every candidate weight stays within the game Lab's bounds (0 to `SPSA_MAX`) — an AI with negative weights, trying to lose, is refused outright.
+- **A human decision**: at least 3 contributors for the SPRT to conclude, then approval by an administrator with MFA before weights reach every player.
+- **What is NOT verified**: the AI's own thinking (search/evaluation) isn't replayed for every submission — only the legality, opening authenticity, and result of the game. Colluding accounts fabricating legal games aren't caught by this mechanism: that's exactly why a confirmed candidate waits for a human decision. Before the November 2026 audit, a game of ONE legal move vouched for a batch of 200 announced wins, and a brand-new account could get any weights promoted in a single submission. Likewise, nothing on the server guarantees that White actually used the reference weights rather than any other choice — that check only exists in the local Lab, which recomputes every move itself.
 
 ## Security & GDPR, built in
 
 - **argon2id** passwords, never stored in plain text
-- **JWT** with a revocable `jti` (logout via Redis)
-- **RBAC**: `requireRole('admin')` middleware
-- **TOTP MFA** (RFC 6238, no dependency): `/mfa/*`, checked at login once enabled
-- **Redis rate-limiting** (anti-brute-force)
+- **JWT** with a revocable `jti` (logout via Redis); **no startup without a strong `JWT_SECRET`** (at least 32 characters, never the example value)
+- The account is **re-read from the database on every request**: a deleted account keeps no session, a removed role applies immediately (the role written in the token is never trusted)
+- **RBAC**: `requireRole('admin')` middleware; an admin is appointed on the server (`scripts/admin.js`), never through signup, and admin actions require **MFA**
+- **TOTP MFA** (RFC 6238, no dependency): `/mfa/*`, checked at login once enabled; a code works only once, 5 wrong codes lock the account's MFA for 15 minutes, `/mfa/setup` can no longer remove it
+- **Redis rate-limiting** (anti-brute-force), counted on the real address: `X-Forwarded-For` is only trusted from a declared proxy (`TRUST_PROXY`)
+- **Scores**: Elo, online wins and tournament XP are never declared by the client
 - Fastify **schema validation** (rejects malformed input)
 - **Parameterized** SQL queries (injection is not possible)
 - **Audit log** with a **hashed** IP, never stored in plain text

@@ -16,10 +16,20 @@ function boardFromStart(E, start) {
   return board;
 }
 
-// Partie DÉCISIVE (jusqu'à 6 captures) depuis la vraie position complète —
-// auto-jeu qui préfère les coups d'éjection ; converge naturellement en
-// 30-60 coups (~100ms). Seed pour reproductibilité entre exécutions.
-export function playDecisiveGame(layoutKey = 'belgian', seed = 1, maxPlies = 500) {
+function seqDe(labels) {
+  let seq = '', n = 1;
+  for (let i = 0; i < labels.length; i++) {
+    if (i % 2 === 0) seq += (i ? ' ' : '') + n + '.' + labels[i].lab;
+    else { seq += ' ' + labels[i].lab; n++; }
+  }
+  return seq;
+}
+
+// Partie DÉCISIVE depuis la vraie position complète, arrêtée comme le Labo du jeu
+// l'arrête (et comme le serveur l'exige depuis l'audit de novembre 2026) : à 6
+// billes sorties ou à 3 billes d'avance, dans la limite de 80 demi-coups. Auto-jeu
+// qui préfère les coups d'éjection. Seed pour reproductibilité entre exécutions.
+export function playDecisiveGame(layoutKey = 'belgian', seed = 1, maxPlies = 80) {
   let s = seed >>> 0;
   const rand = () => { s = (s * 1103515245 + 12345) >>> 0; return s / 4294967296; };
 
@@ -38,19 +48,37 @@ export function playDecisiveGame(layoutKey = 'belgian', seed = 1, maxPlies = 500
     const lab = E.abaproOfficialLabels(mv)[0];
     E.applyMove(mv, color);
     labels.push({ lab, color });
-    if (E.capturedByBlack >= 6 || E.capturedByWhite >= 6) break;
+    const ecart = E.capturedByBlack - E.capturedByWhite;
+    if (E.capturedByBlack >= 6 || E.capturedByWhite >= 6 || Math.abs(ecart) >= 3) break;
     color = color === 'black' ? 'white' : 'black';
   }
 
-  const blackWon = E.capturedByBlack >= 6, whiteWon = E.capturedByWhite >= 6;
-  if (!blackWon && !whiteWon) return null; // pas conclu — l'appelant réessaiera avec un autre seed
+  const ecart = E.capturedByBlack - E.capturedByWhite;
+  const finie = E.capturedByBlack >= 6 || E.capturedByWhite >= 6 || Math.abs(ecart) >= 3;
+  if (!finie || ecart === 0) return null; // pas conclu — l'appelant réessaiera avec un autre seed
+  // 'candidate' = Noir a gagné (le candidat joue Noir par défaut)
+  return { layout: layoutKey, start, startColor: 'black', seq: seqDe(labels), plies: labels.length, winner: ecart > 0 ? 'candidate' : 'baseline' };
+}
 
-  let seq = '', n = 1;
-  for (let i = 0; i < labels.length; i++) {
-    if (i % 2 === 0) seq += (i ? ' ' : '') + n + '.' + labels[i].lab;
-    else { seq += ' ' + labels[i].lab; n++; }
+// Partie qui va jusqu'à la limite du Labo (80 demi-coups) sans qu'aucune bille ne
+// sorte : une nulle conclue, que le serveur compte. Coups sans éjection, pris dans
+// un ordre qui dépend de seed (des parties différentes pour des tests différents).
+export function playLimitDraw(layoutKey = 'belgian', seed = 0, plies = 80) {
+  const E = createEngine();
+  const start = layoutToStart(E, layoutKey);
+  E.setBoard(boardFromStart(E, start));
+  const labels = [];
+  let color = 'black';
+  for (let i = 0; i < plies; i++) {
+    const moves = E.getAllMovesForColor(color).filter(m => !m.eject);
+    if (!moves.length) return null;
+    const mv = moves[(seed + i * 7) % moves.length];
+    labels.push({ lab: E.abaproOfficialLabels(mv)[0], color });
+    E.applyMove(mv, color);
+    if (E.capturedByBlack || E.capturedByWhite) return null;
+    color = color === 'black' ? 'white' : 'black';
   }
-  return { layout: layoutKey, start, startColor: 'black', seq, winner: blackWon ? 'candidate' : 'baseline' };
+  return { layout: layoutKey, start, startColor: 'black', seq: seqDe(labels), plies: labels.length, winner: 'draw' };
 }
 
 export function findDecisiveGame(layoutKey = 'belgian') {
@@ -80,10 +108,16 @@ export function shortLegalSequence(layoutKey, plies = 4) {
     labels.push({ lab, color });
     color = color === 'black' ? 'white' : 'black';
   }
-  let seq = '', n = 1;
-  for (let i = 0; i < labels.length; i++) {
-    if (i % 2 === 0) seq += (i ? ' ' : '') + n + '.' + labels[i].lab;
-    else { seq += ' ' + labels[i].lab; n++; }
-  }
-  return { layout: layoutKey, start, startColor: 'black', seq };
+  return { layout: layoutKey, start, startColor: 'black', seq: seqDe(labels) };
+}
+
+// La même partie, plus UN coup légal joué après sa fin — que le serveur doit refuser.
+export function withExtraMove(game) {
+  const E = createEngine();
+  E.setBoard(boardFromStart(E, game.start));
+  const tokens = game.seq.replace(/\d+\./g, ' ').trim().split(/\s+/);
+  let color = 'black';
+  for (const tok of tokens) { E.applyMove(E.resolveAbaProToken(tok, color), color); color = color === 'black' ? 'white' : 'black'; }
+  const mv = E.getAllMovesForColor(color)[0];
+  return { ...game, seq: game.seq + ' ' + E.abaproOfficialLabels(mv)[0] };
 }
