@@ -75,6 +75,12 @@ vraie adresse : n'accepter que les plages de Cloudflare, et remplacer
 `set_real_ip_from` pour chaque plage Cloudflare, `real_ip_header
 CF-Connecting-IP`, puis `proxy_set_header X-Forwarded-For $remote_addr`).
 
+## Le réseau de calcul (`/ordo`)
+
+- **La CSP du jeu** n'autorise aujourd'hui aucune connexion vers le serveur : le jour de l'ouverture, ajouter son adresse à `connect-src` (dans `src/00-html.part` du jeu), en même temps que `BACKEND.enabled = true` et `BACKEND.url`.
+- **Le moteur** : après chaque version du jeu qui change le fil de calcul, `node scripts/importer-moteur.js <index.html de cette version>`, puis déployer. Sinon les navigateurs à jour ne peuvent plus se brancher (le serveur refuse un moteur qu'il ne sait pas rejouer).
+- **La vérification** consomme du calcul sur le serveur (un fil, une vérification à la fois : quelques secondes par partie à profondeur 2). La limiter avec `ORDO_VERIF_COUPS` si le serveur est petit.
+
 ## Administrateurs
 
 Il n'y a plus de compte admin de démarrage (`BOOTSTRAP_ADMIN_EMAIL` est sans

@@ -51,6 +51,14 @@ npm test                                 # applies migrations then runs the suit
 | POST | `/lab/result` | ✔ | submit one game (replayed; only it counts) |
 | GET | `/lab/pending` | admin + MFA | confirmed candidates awaiting approval |
 | POST | `/lab/job/:id/approve` · `/reject` | admin + MFA | make a candidate the champion, or discard it |
+| GET | `/ordo/etat` | — | state of the compute network: families, missions, campaigns (public) |
+| POST | `/ordo/executants` | ✔ | plug in an executor (family, cores, engine fingerprint) |
+| POST | `/ordo/executants/:id/battement` · `/debrancher` · `/rebrancher` | ✔ | heartbeat (renews leases), unplug, plug back in |
+| POST | `/ordo/missions/reclamer` | ✔ | ask for a mission (the server chooses) |
+| POST | `/ordo/tentatives/:id/resultat` · `/abandon` | ✔ | hand in a game (verified before it counts), or give it up |
+| GET | `/ordo/mes-executants` | ✔ | one's own executors and their figures |
+| POST | `/ordo/campagnes` · GET `/ordo/campagnes/:id` · POST `…/etat` | admin + MFA | create, follow, pause or finish a campaign |
+| POST | `/ordo/familles/:famille` · `/ordo/executants/:id/actif` · GET `/ordo/executants` | admin + MFA | the switches: a whole family, one executor |
 | GET | `/account/export` | ✔ | **portability** (JSON export) |
 | DELETE | `/account` | ✔ | **right to erasure** (real purge) |
 | POST | `/mfa/setup` | ✔ | generate TOTP secret + QR (otpauth) |
@@ -111,6 +119,25 @@ The game's Lab (see `index.html`) normally runs locally, in each player's `local
 - **Bounded weights**: every candidate weight stays within the game Lab's bounds (0 to `SPSA_MAX`) — an AI with negative weights, trying to lose, is refused outright.
 - **A human decision**: at least 3 contributors for the SPRT to conclude, then approval by an administrator with MFA before weights reach every player.
 - **What is NOT verified**: the AI's own thinking (search/evaluation) isn't replayed for every submission — only the legality, opening authenticity, and result of the game. Colluding accounts fabricating legal games aren't caught by this mechanism: that's exactly why a confirmed candidate waits for a human decision. Before the November 2026 audit, a game of ONE legal move vouched for a batch of 200 announced wins, and a brand-new account could get any weights promoted in a single submission. Likewise, nothing on the server guarantees that White actually used the reference weights rather than any other choice — that check only exists in the local Lab, which recomputes every move itself.
+
+## Scheduler (`/ordo/*`): pluggable executors
+
+The Lab decides **what** to compute: a *campaign*, two weight sets to settle in fixed-depth games. The scheduler decides **where and when**: each game is a *mission*, given to an *executor*. Verification decides whether the result counts. The scheduler knows no technology, only a contract every executor honours: executors can be plugged in and out at any time without touching the rest.
+
+- **Families**: `navigateur` (the browser — the game Lab's "Contribute" button, 🌐 Compute network tab), `node` (`scripts/executant.js`, on any PC or server), and `natif`, `serveur`, `boinc` reserved for future adapters. Each family has its switch (admin); each executor has its own (its owner can unplug it, the admin can cut it off).
+- **The contract**: plug in (family, cores, SHA-256 fingerprint of the engine); claim a mission; send a heartbeat (the 60 s lease is renewed); hand in the result; unplug. A mission whose lease expires (tab closed, phone asleep, machine lost) goes back to the queue. Every attempt has its token: an executor coming back too late can't make a result count, and a mission only counts once.
+- **The choice**: the server assigns, never the executor. Same engine required, one mission per core, campaigns by priority, and a duration rule based on each executor's **measured speed**: a mission estimated too long for a browser (over 5 minutes) goes to a PC (up to an hour).
+- **Verification**: nothing an executor says is trusted. The server replays the game with the game's engine (`moteur/fil-<version>.js`, in a separate thread) and **searches three randomly drawn plies itself**, unknown to the executor in advance, which must be exactly the game's. Possible since game v3.18: at fixed depth, a game can be redone move for move (checked on 116 plies recomputed one by one, up to depth 3). Illegal move, opening that doesn't come from the seed, move that isn't the engine's, unfinished game or wrong winner: refused. Three refusals (more than accepted games) cut the executor off.
+- **The tally**: A's wins, draws and losses, pentanomial per pair (each pair plays the same opening, colours swapped), Elo with its margin, SPRT (no conclusion before 30 games).
+- **The engine**: `node scripts/importer-moteur.js <game index.html>` registers a game version's worker code in `moteur/registre.json`. A browser whose game version isn't registered can't plug in (409). To redo for every game version that changes the worker code.
+
+Plugging in a PC:
+
+```bash
+ABA_MDP='…' node scripts/executant.js --api https://api.example.com --email me@example.com --coeurs 3 --nom "Living-room PC"
+```
+
+Ctrl-C unplugs it cleanly (its missions go straight back to the queue). Useful server variables: `ORDO_BAIL_S` (lease duration, 60 s), `ORDO_VERIF_COUPS` (plies searched per result, 3), `ORDO_VERIF_DELAI_MS` (maximum duration of a verification, 120 s).
 
 ## Security & GDPR, built in
 

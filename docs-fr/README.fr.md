@@ -51,6 +51,14 @@ npm test                                 # applique les migrations puis lance la
 | POST | `/lab/result` | ✔ | soumettre une partie (rejouée ; seule elle compte) |
 | GET | `/lab/pending` | admin + MFA | candidats confirmés en attente de validation |
 | POST | `/lab/job/:id/approve` · `/reject` | admin + MFA | faire d'un candidat le champion, ou l'écarter |
+| GET | `/ordo/etat` | — | état du réseau de calcul : familles, missions, campagnes (public) |
+| POST | `/ordo/executants` | ✔ | brancher un exécutant (famille, cœurs, empreinte du moteur) |
+| POST | `/ordo/executants/:id/battement` · `/debrancher` · `/rebrancher` | ✔ | signe de vie (renouvelle les baux), débrancher, rebrancher |
+| POST | `/ordo/missions/reclamer` | ✔ | demander une mission (le serveur choisit) |
+| POST | `/ordo/tentatives/:id/resultat` · `/abandon` | ✔ | rendre une partie (vérifiée avant d'être comptée), ou y renoncer |
+| GET | `/ordo/mes-executants` | ✔ | ses exécutants et leurs chiffres |
+| POST | `/ordo/campagnes` · GET `/ordo/campagnes/:id` · POST `…/etat` | admin + MFA | créer, suivre, mettre en pause ou finir une campagne |
+| POST | `/ordo/familles/:famille` · `/ordo/executants/:id/actif` · GET `/ordo/executants` | admin + MFA | les interrupteurs : une famille entière, un exécutant |
 | GET | `/account/export` | ✔ | **portabilité** (export JSON) |
 | DELETE | `/account` | ✔ | **droit à l'oubli** (purge réelle) |
 | POST | `/mfa/setup` | ✔ | générer secret TOTP + QR (otpauth) |
@@ -111,6 +119,25 @@ Le Labo du jeu (voir `index.html`) tourne normalement en local, dans le `localSt
 - **Poids bornés** : chaque poids d'un candidat reste dans les bornes du Labo du jeu (0 à `SPSA_MAX`) — une IA aux poids négatifs, qui chercherait à perdre, est refusée d'emblée.
 - **Une décision humaine** : au moins 3 contributeurs pour que le SPRT conclue, puis la validation d'un administrateur avec MFA avant que des poids partent chez tous les joueurs.
 - **Ce qui n'est PAS vérifié** : la réflexion de l'IA elle-même (recherche/évaluation) n'est pas rejouée pour chaque soumission — seulement la légalité, l'authenticité de l'ouverture et le résultat de la partie. Des comptes complices qui fabriquent des parties légales ne sont pas détectés par ce mécanisme : c'est précisément pourquoi un candidat confirmé attend une validation humaine. Avant l'audit de novembre 2026, une partie d'UN coup légal justifiait un lot de 200 victoires annoncées, et un compte neuf faisait promouvoir n'importe quels poids en un seul envoi. De même, rien ne garantit côté serveur que Blanc a réellement utilisé les poids de référence plutôt que n'importe quel autre choix — cette vérification-là n'existe que côté Labo local, qui recalcule chaque coup lui-même.
+
+## Ordonnanceur (`/ordo/*`) : des exécutants branchables
+
+Le Labo décide **quoi** calculer : une *campagne*, deux jeux de poids à départager en parties à profondeur fixe. L'ordonnanceur décide **où et quand** : chaque partie est une *mission*, confiée à un *exécutant*. La vérification décide si le résultat compte. L'ordonnanceur ne connaît aucune technologie, seulement un contrat que tout exécutant respecte : on branche et on débranche des exécutants à tout moment sans toucher au reste.
+
+- **Les familles** : `navigateur` (le bouton « Contribuer » du Labo du jeu, onglet 🌐 Réseau de calcul), `node` (`scripts/executant.js`, sur n'importe quel PC ou serveur), et `natif`, `serveur`, `boinc` réservées aux adaptateurs à venir. Chaque famille a son interrupteur (admin) ; chaque exécutant a le sien (son propriétaire peut le débrancher, l'admin peut le couper).
+- **Le contrat** : se brancher (famille, cœurs, empreinte SHA-256 du moteur) ; réclamer une mission ; donner signe de vie (le bail de 60 s se renouvelle) ; rendre le résultat ; se débrancher. Une mission dont le bail expire (onglet fermé, téléphone en veille, machine perdue) repart dans la file. Chaque tentative a son jeton : un exécutant revenu trop tard ne fait pas compter un résultat, et une mission n'est comptée qu'une fois.
+- **Le choix** : c'est le serveur qui attribue, jamais l'exécutant. Même moteur exigé, une mission par cœur, campagnes par priorité, et une règle de durée fondée sur la **vitesse mesurée** de chaque exécutant : une mission estimée trop longue pour un navigateur (plus de 5 minutes) va à un PC (jusqu'à une heure).
+- **La vérification** : rien de ce que dit un exécutant n'est cru. Le serveur rejoue la partie avec le moteur du jeu (`moteur/fil-<version>.js`, dans un fil séparé) et **recherche lui-même trois demi-coups tirés au hasard**, inconnus de l'exécutant à l'avance, qui doivent être exactement ceux de la partie. Possible depuis la v3.18 du jeu : à profondeur fixe, une partie se refait coup pour coup (vérifié sur 116 demi-coups recalculés un à un, jusqu'à la profondeur 3). Coup illégal, ouverture qui ne vient pas de la graine, coup qui n'est pas celui du moteur, partie inachevée ou vainqueur faux : refusé. Trois refus (plus que de parties acceptées) coupent l'exécutant.
+- **Le bilan** : victoires, nulles, défaites de A, pentanomial par paire (chaque paire joue la même ouverture, couleurs échangées), Elo avec sa marge, SPRT (pas de conclusion avant 30 parties).
+- **Le moteur** : `node scripts/importer-moteur.js <index.html du jeu>` inscrit le fil de calcul d'une version du jeu dans `moteur/registre.json`. Un navigateur dont la version du jeu n'est pas inscrite ne peut pas se brancher (409). À refaire à chaque version du jeu qui change le fil de calcul.
+
+Brancher un PC :
+
+```bash
+ABA_MDP='…' node scripts/executant.js --api https://api.exemple.fr --email moi@exemple.fr --coeurs 3 --nom "PC du salon"
+```
+
+Ctrl-C le débranche proprement (ses missions repartent tout de suite dans la file). Variables utiles côté serveur : `ORDO_BAIL_S` (durée du bail, 60 s), `ORDO_VERIF_COUPS` (demi-coups recherchés par résultat, 3), `ORDO_VERIF_DELAI_MS` (durée maximale d'une vérification, 120 s).
 
 ## Sécurité & RGPD intégrés
 

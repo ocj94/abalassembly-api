@@ -10,6 +10,8 @@ import profileRoutes from './routes/profile.js';
 import progressRoutes from './routes/progress.js';
 import gameRoutes from './routes/game.js';
 import labRoutes from './routes/lab.js';
+import ordoRoutes from './routes/ordo.js';
+import { arreter as arreterVerificateur } from './verificateur.js';
 import tournamentRoutes from './routes/tournament.js';
 import accountRoutes from './routes/account.js';
 import mfaRoutes from './routes/mfa.js';
@@ -62,6 +64,8 @@ export async function build() {
   await app.register(progressRoutes, { prefix: '/progress' });
   await app.register(gameRoutes, { prefix: '/game' });
   await app.register(labRoutes, { prefix: '/lab' });
+  await app.register(ordoRoutes, { prefix: '/ordo' });
+  app.addHook('onClose', async () => { await arreterVerificateur(); });
   await app.register(tournamentRoutes, { prefix: '/tournament' });
   await app.register(accountRoutes, { prefix: '/account' });
   await app.register(mfaRoutes, { prefix: '/mfa' });

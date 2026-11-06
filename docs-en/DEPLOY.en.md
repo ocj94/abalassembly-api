@@ -73,6 +73,12 @@ the `CF-Connecting-IP` header (with nginx: `set_real_ip_from` for each
 Cloudflare range, `real_ip_header CF-Connecting-IP`, then
 `proxy_set_header X-Forwarded-For $remote_addr`).
 
+## The compute network (`/ordo`)
+
+- **The game's CSP** currently allows no connection to the server: on opening day, add its address to `connect-src` (in the game's `src/00-html.part`), together with `BACKEND.enabled = true` and `BACKEND.url`.
+- **The engine**: after every game version that changes the worker code, `node scripts/importer-moteur.js <that version's index.html>`, then deploy. Otherwise up-to-date browsers can no longer plug in (the server refuses an engine it can't replay).
+- **Verification** uses compute on the server (one thread, one verification at a time: a few seconds per game at depth 2). Limit it with `ORDO_VERIF_COUPS` on a small server.
+
 ## Administrators
 
 There is no bootstrap admin account anymore (`BOOTSTRAP_ADMIN_EMAIL` has no

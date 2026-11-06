@@ -1,0 +1,9 @@
+{
+  "moteurs": {
+    "86ff4bf98f612400b47088604a417ac630e6894e9d7711a654294d3aa6ef24c7": {
+      "version": "v3.18",
+      "fichier": "fil-v3.18.js"
+    }
+  },
+  "defaut": "86ff4bf98f612400b47088604a417ac630e6894e9d7711a654294d3aa6ef24c7"
+}
