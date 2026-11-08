@@ -35,8 +35,9 @@ npm test                                 # applique les migrations puis lance la
 
 | Méthode | Route | Auth | Rôle |
 |---|---|---|---|
-| POST | `/auth/signup` | — | créer un compte (argon2) |
-| POST | `/auth/login` | — | authentifier → JWT |
+| GET | `/auth/defi` | — | défi de la preuve de travail anti-robot |
+| POST | `/auth/signup` | — | créer un compte (argon2 ; preuve de travail ; 5 par heure et par adresse) |
+| POST | `/auth/login` | — | authentifier → JWT (10 par minute et par adresse ; preuve de travail après 3 mots de passe faux) |
 | POST | `/auth/logout` | ✔ | révoquer le jeton |
 | GET/PUT | `/profile` | ✔ | lire / modifier le profil |
 | GET/PUT | `/progress` | ✔ | synchroniser XP/niveau/série (l'Elo est tenu par le serveur) |
@@ -75,7 +76,8 @@ npm test                                 # applique les migrations puis lance la
 | `/account/export` | GET | ✔ | **portabilité** (export JSON) |
 | `/auth/login` | POST | — | authentifier → JWT |
 | `/auth/logout` | POST | ✔ | révoquer le jeton |
-| `/auth/signup` | POST | — | créer un compte (argon2) |
+| `/auth/defi` | GET | — | défi de la preuve de travail anti-robot |
+| `/auth/signup` | POST | — | créer un compte (argon2 ; preuve de travail) |
 | `/game/history` | GET | ✔ | historique personnel (200 dernières parties) |
 | `/game/result` | POST | ✔ | enregistrer le résultat d'une partie |
 | `/health` | GET | — | sonde de vie |
@@ -157,7 +159,9 @@ Variables utiles côté serveur : `ORDO_BAIL_S` (durée du bail, 60 s), `ORDO_VE
 - Compte **relu en base à chaque requête** : un compte supprimé n'a plus aucune session, un rôle retiré s'applique tout de suite (le rôle écrit dans le jeton n'est jamais cru)
 - **RBAC** : middleware `requireRole('admin')` ; un admin se nomme sur le serveur (`scripts/admin.js`), jamais par l'inscription, et ses actions exigent la **MFA** ; le rôle `calcul` (même script) ne donne que le droit de brancher des exécutants `serveur`
 - **MFA TOTP** (RFC 6238, sans dépendance) : `/mfa/*`, vérifiée au login si activée ; un code ne sert qu'une fois, 5 codes faux bloquent la MFA du compte 15 minutes, `/mfa/setup` ne peut plus la retirer
-- **Rate-limiting** Redis (anti-bruteforce), compté sur la vraie adresse : `X-Forwarded-For` n'est cru que d'un relais déclaré (`TRUST_PROXY`)
+- **Rate-limiting** Redis (anti-bruteforce), compté sur la vraie adresse : `X-Forwarded-For` n'est cru que d'un relais déclaré (`TRUST_PROXY`) ; une IPv6 compte par bloc /64 (un abonné en a 2^64) ; limites propres à la connexion (10 par minute) et à l'inscription (5 par heure) (`src/protection.js`)
+- **Mots de passe faux par compte**, quelle que soit l'adresse : preuve de travail après 3, compte bloqué 15 minutes après 10 (les sessions ouvertes continuent) ; même réponse et même temps de calcul pour un email inconnu (argon2 sur un condensé factice)
+- **Preuve de travail** en guise de captcha (`src/preuve.js`) : défi signé, à usage unique, valable 5 minutes ; le navigateur trouve un nombre tel que SHA-256 commence par 17 bits nuls (`PREUVE_BITS`, 0,3 s sur un ordinateur, 1 s environ sur un téléphone). Ni service tiers, ni cookie, ni script d'un autre site : le jeu reste un fichier unique hors ligne. Ralentit les robots en masse, n'arrête pas un attaquant déterminé : c'est un complément des limites
 - **Scores** : l'Elo, les victoires en ligne et l'XP des tournois ne sont jamais déclarés par le client
 - **Validation de schéma** Fastify (rejette les entrées malformées)
 - Requêtes SQL **paramétrées** (injection impossible)

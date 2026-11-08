@@ -77,6 +77,10 @@ Le serveur ne croit donc cet en-tête que s'il vient d'un relais déclaré :
   reverse proxy joint le serveur.
 - `TRUST_PROXY=true` est refusé au démarrage.
 
+Sans relais déclaré, les limites propres à la connexion (10 par minute) et à
+l'inscription (5 par heure) s'appliqueraient à tous les joueurs ensemble : à
+régler absolument avant l'ouverture.
+
 Avec Cloudflare devant le reverse proxy, c'est ce dernier qui doit écrire la
 vraie adresse : n'accepter que les plages de Cloudflare, et remplacer
 `X-Forwarded-For` par l'en-tête `CF-Connecting-IP` (avec nginx :

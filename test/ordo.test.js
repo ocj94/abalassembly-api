@@ -238,7 +238,7 @@ test('🔌 un appareil éteint sans se débrancher ne bloque pas son compte ; le
   for (let i = 0; i < 10; i++) await executant('serveur', 1, calcul);
 });
 
-test('🖥️ scripts/executant.js : --aide, famille inconnue, puis branché il joue, se reconnecte, suit l\'interrupteur, et SIGTERM le débranche', { timeout: 120000 }, async () => {
+test('🖥️ scripts/executant.js : --aide, famille inconnue, puis branché il joue, se reconnecte (preuve de travail comprise), suit l\'interrupteur, et SIGTERM le débranche', { timeout: 120000 }, async () => {
   const aide = spawnSync(process.execPath, [CLI, '--aide'], { encoding: 'utf8', env: { PATH: process.env.PATH } });
   assert.equal(aide.status, 0); assert.match(aide.stdout, /ABA_FAMILLE/);
   const faux = spawnSync(process.execPath, [CLI, '--famille', 'boinc'], { encoding: 'utf8', env: { PATH: process.env.PATH } });
@@ -253,6 +253,8 @@ test('🖥️ scripts/executant.js : --aide, famille inconnue, puis branché il 
     // un jeton révoqué au départ : l'exécutant doit se reconnecter seul avec son mot de passe
     const perime = calcul.token;
     await app.inject({ method: 'POST', url: '/auth/logout', headers: authed(perime) });
+    // et trois mots de passe faux tapés pour ce compte : sa reconnexion devra joindre une preuve de travail
+    for (let i = 0; i < 3; i++) await app.inject({ method: 'POST', url: '/auth/login', payload: { email: calcul.email, password: 'MauvaisMotDePasse1' } });
     const p = spawn(process.execPath, [CLI], { env: { PATH: process.env.PATH, ABA_API: 'http://127.0.0.1:' + port, ABA_FAMILLE: 'serveur',
       ABA_EMAIL: calcul.email, ABA_MDP: calcul.password, ABA_JETON: perime, ABA_COEURS: '1', ABA_NOM: 'essai-cli', ABA_ATTENTE_MS: '300' } });
     let out = '';

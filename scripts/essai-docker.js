@@ -16,6 +16,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { totpCode } from '../src/totp.js';
+import { resoudreDefi } from '../src/preuveClient.js';
 
 process.chdir(path.join(path.dirname(fileURLToPath(import.meta.url)), '..'));
 if (fs.existsSync('.env')) {
@@ -68,12 +69,12 @@ try {
     const m = await import('/app/src/moteurIA.js'), r = m.registre();
     let integre = false; try { m.codeMoteur(r.defaut); integre = true; } catch (e) {}
     console.log(JSON.stringify({ uid: process.getuid(), defaut: r.defaut, version: r.defaut && r.moteurs[r.defaut].version, integre,
-      presents: ['moteur', 'scripts/admin.js', 'scripts/executant.js', 'src/verificateurFil.js'].filter((f) => fs.existsSync(f)),
+      presents: ['moteur', 'scripts/admin.js', 'scripts/executant.js', 'src/verificateurFil.js', 'src/preuveClient.js'].filter((f) => fs.existsSync(f)),
       absents: ['test', '.env', '.git', 'scripts/check-engine-sync.js', 'scripts/essai-docker.js'].filter((f) => !fs.existsSync(f)) }));`],
   { sortie: true }).trim().split('\n').pop());
   verifier(inv.uid !== 0, 'l\'image ne tourne pas en root (uid ' + inv.uid + ')');
   verifier(inv.integre, 'moteur ' + inv.version + ' présent et intact (empreinte ' + String(inv.defaut).slice(0, 12) + '…)');
-  verifier(inv.presents.length === 4, 'moteur, admin.js, executant.js et le fil de vérification sont dans l\'image');
+  verifier(inv.presents.length === 5, 'moteur, admin.js, executant.js, le fil de vérification et la preuve de travail sont dans l\'image');
   verifier(inv.absents.length === 5, 'ni tests, ni .env, ni .git, ni scripts de développement dans l\'image');
   const aide = compose(['run', '--rm', '--no-deps', '-T', 'executant', 'node', 'scripts/executant.js', '--aide'], { sortie: true });
   verifier(/ABA_FAMILLE/.test(aide), 'l\'exécutant répond à --aide dans le conteneur');
@@ -86,8 +87,9 @@ try {
   verifier(sante && (sante.ok || sante.status), 'l\'API répond sur /health');
 
   etape('comptes : un admin avec MFA, un compte de calcul (scripts/admin.js dans le conteneur)');
-  const a = await http('POST', '/auth/signup', ADMIN);
-  await http('POST', '/auth/signup', CALCUL);
+  const inscrire = async (c) => http('POST', '/auth/signup', { ...c, preuve: resoudreDefi((await http('GET', '/auth/defi')).defi) });
+  const a = await inscrire(ADMIN);
+  await inscrire(CALCUL);
   compose(['exec', '-T', 'api', 'node', 'scripts/admin.js', 'nommer', ADMIN.email]);
   compose(['exec', '-T', 'api', 'node', 'scripts/admin.js', 'calcul', CALCUL.email]);
   const s = await http('POST', '/mfa/setup', null, a.token);

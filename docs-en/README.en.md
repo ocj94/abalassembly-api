@@ -35,8 +35,9 @@ npm test                                 # applies migrations then runs the suit
 
 | Method | Route | Auth | Role |
 |---|---|---|---|
-| POST | `/auth/signup` | — | create an account (argon2) |
-| POST | `/auth/login` | — | authenticate → JWT |
+| GET | `/auth/defi` | — | anti-bot proof-of-work challenge |
+| POST | `/auth/signup` | — | create an account (argon2; proof of work; 5 per hour per address) |
+| POST | `/auth/login` | — | authenticate → JWT (10 per minute per address; proof of work after 3 wrong passwords) |
 | POST | `/auth/logout` | ✔ | revoke the token |
 | GET/PUT | `/profile` | ✔ | read / edit the profile |
 | GET/PUT | `/progress` | ✔ | sync XP/level/streak (Elo is kept by the server) |
@@ -75,7 +76,8 @@ npm test                                 # applies migrations then runs the suit
 | `/account/export` | GET | ✔ | **portability** (JSON export) |
 | `/auth/login` | POST | — | authenticate → JWT |
 | `/auth/logout` | POST | ✔ | revoke the token |
-| `/auth/signup` | POST | — | create an account (argon2) |
+| `/auth/defi` | GET | — | anti-bot proof-of-work challenge |
+| `/auth/signup` | POST | — | create an account (argon2; proof of work) |
 | `/game/history` | GET | ✔ | personal history (last 200 games) |
 | `/game/result` | POST | ✔ | record a game's result |
 | `/health` | GET | — | liveness probe |
@@ -155,7 +157,9 @@ Useful server variables: `ORDO_BAIL_S` (lease duration, 60 s), `ORDO_VERIF_COUPS
 - The account is **re-read from the database on every request**: a deleted account keeps no session, a removed role applies immediately (the role written in the token is never trusted)
 - **RBAC**: `requireRole('admin')` middleware; an admin is appointed on the server (`scripts/admin.js`), never through signup, and admin actions require **MFA**; the `calcul` role (same script) only grants plugging in `serveur` executors
 - **TOTP MFA** (RFC 6238, no dependency): `/mfa/*`, checked at login once enabled; a code works only once, 5 wrong codes lock the account's MFA for 15 minutes, `/mfa/setup` can no longer remove it
-- **Redis rate-limiting** (anti-brute-force), counted on the real address: `X-Forwarded-For` is only trusted from a declared proxy (`TRUST_PROXY`)
+- **Redis rate-limiting** (anti-brute-force), counted on the real address: `X-Forwarded-For` is only trusted from a declared proxy (`TRUST_PROXY`); an IPv6 address counts per /64 block (a subscriber has 2^64 of them); dedicated limits for login (10 per minute) and signup (5 per hour) (`src/protection.js`)
+- **Wrong passwords per account**, whatever the address: proof of work after 3, account locked for 15 minutes after 10 (open sessions keep working); same response and same computing time for an unknown email (argon2 on a dummy hash)
+- **Proof of work** as a captcha (`src/preuve.js`): signed, single-use challenge, valid 5 minutes; the browser finds a number such that SHA-256 starts with 17 zero bits (`PREUVE_BITS`, 0.3 s on a computer, about 1 s on a phone). No third-party service, no cookie, no script from another site: the game stays a single offline file. Slows down bots at scale, does not stop a determined attacker: it complements the limits
 - **Scores**: Elo, online wins and tournament XP are never declared by the client
 - Fastify **schema validation** (rejects malformed input)
 - **Parameterized** SQL queries (injection is not possible)

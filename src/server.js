@@ -2,6 +2,7 @@ import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
+import { cleIp } from './protection.js';
 import { redis } from './redis.js';
 import { jwtSecret } from './auth.js';
 
@@ -52,7 +53,7 @@ export async function build() {
     max: Number(process.env.RATE_LIMIT_MAX_TEST_OVERRIDE) || 100,
     timeWindow: '1 minute',
     redis,
-    keyGenerator: (req) => req.ip
+    keyGenerator: (req) => cleIp(req.ip)     // IPv6 : par bloc /64 (src/protection.js)
   });
 
   // Sonde de vie (pour le load-balancer / monitoring)

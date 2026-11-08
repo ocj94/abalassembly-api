@@ -35,6 +35,17 @@ export function verifyPassword(hash, plain) {
   return argon2.verify(hash, plain).catch(() => false);
 }
 
+// Email inconnu (ou compte anonymisé, sans mot de passe) : on fait quand même un
+// calcul argon2, sur un condensé factice, pour répondre dans le même temps que pour
+// un compte existant. Avant, la réponse immédiate trahissait les adresses inscrites.
+let factice = null;
+export async function verifyPasswordOuFactice(hash, plain) {
+  if (hash) return verifyPassword(hash, plain);
+  if (!factice) factice = hashPassword(crypto.randomBytes(24).toString('hex'));
+  await verifyPassword(await factice, plain);
+  return false;
+}
+
 // ─── Jetons JWT signés, avec identifiant unique (jti) pour la révocation ───
 export function issueToken(user) {
   const jti = crypto.randomUUID();

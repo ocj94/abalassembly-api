@@ -7,7 +7,7 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import jwt from 'jsonwebtoken';
-import { makeApp, teardown, signupUser, uniqueEmail, STRONG_PASSWORD } from './helpers.js';
+import { makeApp, teardown, signupUser, uniqueEmail, STRONG_PASSWORD, preuve } from './helpers.js';
 import { db } from '../src/db.js';
 import { redis } from '../src/redis.js';
 import { totpCode } from '../src/totp.js';
@@ -60,7 +60,7 @@ test('🛡️ ADMIN : s\'inscrire avec l\'adresse BOOTSTRAP_ADMIN_EMAIL ne donne
   const adresse = uniqueEmail('admin');
   process.env.BOOTSTRAP_ADMIN_EMAIL = adresse; // l'ancienne variable, désormais sans effet
   try {
-    const r = await app.inject({ method: 'POST', url: '/auth/signup', payload: { email: adresse, password: STRONG_PASSWORD, username: 'intrus' } });
+    const r = await app.inject({ method: 'POST', url: '/auth/signup', payload: { preuve: await preuve(app), email: adresse, password: STRONG_PASSWORD, username: 'intrus' } });
     assert.equal(r.statusCode, 200);
     assert.equal(r.json().user.role, 'player');
   } finally { delete process.env.BOOTSTRAP_ADMIN_EMAIL; }

@@ -1,5 +1,8 @@
-import { hashPassword, verifyPassword, issueToken, hashIp, requireAuth, tokenTtlSeconds } from '../auth.js';
+import { hashPassword, verifyPasswordOuFactice, issueToken, hashIp, requireAuth, tokenTtlSeconds } from '../auth.js';
 import { verifierCodeMfa } from '../mfaCode.js';
+import { nouveauDefi, verifierPreuve, schemaPreuve } from '../preuve.js';
+import { limiteRoute, LIMITE_CONNEXION, LIMITE_INSCRIPTION, echecsConnexion, noterEchecConnexion, effacerEchecsConnexion,
+  ECHECS_AVANT_PREUVE, ECHECS_AVANT_BLOCAGE } from '../protection.js';
 import { revokeToken } from '../redis.js';
 import { db } from '../db.js';
 
@@ -12,7 +15,8 @@ const credentialsSchema = {
       email:    { type: 'string', format: 'email', maxLength: 254 },
       password: { type: 'string', minLength: 8, maxLength: 200 },
       username: { type: 'string', minLength: 3, maxLength: 24 },
-      otp:      { type: 'string', maxLength: 10 }
+      otp:      { type: 'string', maxLength: 10 },
+      preuve:   schemaPreuve
     }
   }
 };
@@ -27,9 +31,14 @@ async function audit(userId, action, req) {
 }
 
 export default async function (app) {
-  // ─── Inscription ───
-  app.post('/signup', { schema: credentialsSchema }, async (req, reply) => {
+  // ─── Défi anti-robot (preuve de travail, src/preuve.js) ───
+  app.get('/defi', async () => nouveauDefi());
+
+  // ─── Inscription : preuve de travail toujours, 5 par heure et par adresse ───
+  app.post('/signup', { schema: credentialsSchema, config: { rateLimit: limiteRoute(LIMITE_INSCRIPTION, '1 hour') } }, async (req, reply) => {
     const { email, password, username } = req.body;
+    const p = await verifierPreuve(req.body.preuve);
+    if (!p.ok) return reply.code(400).send({ error: p.error, preuveRequise: true });
     const hash = await hashPassword(password);
     // Toujours 'player'. Avant, l'inscription avec BOOTSTRAP_ADMIN_EMAIL donnait le
     // rôle admin — à quiconque s'inscrivait le premier avec cette adresse, puisque
@@ -52,8 +61,16 @@ export default async function (app) {
   });
 
   // ─── Connexion ───
-  app.post('/login', { schema: credentialsSchema }, async (req, reply) => {
+  app.post('/login', { schema: credentialsSchema, config: { rateLimit: limiteRoute(LIMITE_CONNEXION, '1 minute') } }, async (req, reply) => {
     const { email, password } = req.body;
+    // mots de passe faux pour cette adresse : preuve de travail, puis blocage (src/protection.js)
+    const echecs = await echecsConnexion(email);
+    if (echecs >= ECHECS_AVANT_BLOCAGE)
+      return reply.code(429).send({ error: 'trop de mots de passe faux pour ce compte : réessayer dans 15 minutes' });
+    if (echecs >= ECHECS_AVANT_PREUVE) {
+      const p = await verifierPreuve(req.body.preuve);
+      if (!p.ok) return reply.code(401).send({ error: p.error, preuveRequise: true });
+    }
     const { rows } = await db.query(
       `SELECT id, username, email, password_hash, country, role, totp_secret, totp_enabled
        FROM users WHERE email = $1 AND deleted_at IS NULL`,
@@ -61,8 +78,10 @@ export default async function (app) {
     );
     const u = rows[0];
     // Message identique que l'email existe ou non → aucune fuite d'information
-    if (!u || !(await verifyPassword(u.password_hash, password))) {
-      return reply.code(401).send({ error: 'identifiants invalides' });
+    if (!(await verifyPasswordOuFactice(u && u.password_hash, password))) {
+      const n = await noterEchecConnexion(email);
+      if (u) await audit(u.id, 'login_fail', req);
+      return reply.code(401).send(Object.assign({ error: 'identifiants invalides' }, n >= ECHECS_AVANT_PREUVE ? { preuveRequise: true } : {}));
     }
     // MFA : si activée, un code TOTP valide est requis
     if (u.totp_enabled) {
@@ -74,6 +93,7 @@ export default async function (app) {
         return reply.code(v.code).send({ error: v.error, mfaRequired: true });
       }
     }
+    await effacerEchecsConnexion(email);
     delete u.password_hash; delete u.totp_secret;
     await db.query(`UPDATE users SET last_seen_at = now() WHERE id = $1`, [u.id]);
     await audit(u.id, 'login', req);

@@ -2,7 +2,7 @@
 // Fastify, une vraie base PostgreSQL de test et un vrai Redis — pas de mocks.
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { makeApp, teardown, uniqueEmail, signupUser, STRONG_PASSWORD } from './helpers.js';
+import { makeApp, teardown, uniqueEmail, signupUser, STRONG_PASSWORD, preuve } from './helpers.js';
 
 let app;
 before(async () => { app = await makeApp(); });
@@ -11,11 +11,11 @@ after(async () => { await teardown(app); });
 test('signup : crée un compte et renvoie un jeton exploitable', async () => {
   const email = uniqueEmail('signup-ok');
   const res = await app.inject({ method: 'POST', url: '/auth/signup',
-    payload: { email, password: STRONG_PASSWORD, username: 'Olivier' } });
+    payload: { preuve: await preuve(app), email, password: STRONG_PASSWORD, username: 'Alex' } });
   assert.equal(res.statusCode, 200);
   const body = res.json();
   assert.equal(body.user.email, email.toLowerCase());
-  assert.equal(body.user.username, 'Olivier');
+  assert.equal(body.user.username, 'Alex');
   assert.equal(body.user.role, 'player');
   assert.ok(body.token && body.token.split('.').length === 3, 'un JWT a 3 segments');
   assert.equal(body.user.password_hash, undefined, 'le hash ne doit jamais fuiter');
@@ -30,28 +30,28 @@ test('signup : crée un compte et renvoie un jeton exploitable', async () => {
 test('signup : email déjà utilisé → 409, mot de passe non ré-exposé', async () => {
   const email = uniqueEmail('dup');
   const first = await app.inject({ method: 'POST', url: '/auth/signup',
-    payload: { email, password: STRONG_PASSWORD } });
+    payload: { preuve: await preuve(app), email, password: STRONG_PASSWORD } });
   assert.equal(first.statusCode, 200);
 
   const second = await app.inject({ method: 'POST', url: '/auth/signup',
-    payload: { email, password: 'AutreMotDePasse99' } });
+    payload: { preuve: await preuve(app), email, password: 'AutreMotDePasse99' } });
   assert.equal(second.statusCode, 409);
   assert.equal(second.json().error, 'email déjà utilisé');
 });
 
 test('signup : validations de schéma (mot de passe trop court, email invalide)', async () => {
   const short = await app.inject({ method: 'POST', url: '/auth/signup',
-    payload: { email: uniqueEmail(), password: '1234567' } }); // 7 caractères < minLength 8
+    payload: { preuve: await preuve(app), email: uniqueEmail(), password: '1234567' } }); // 7 caractères < minLength 8
   assert.equal(short.statusCode, 400);
 
   const badEmail = await app.inject({ method: 'POST', url: '/auth/signup',
-    payload: { email: 'pas-un-email', password: STRONG_PASSWORD } });
+    payload: { preuve: await preuve(app), email: 'pas-un-email', password: STRONG_PASSWORD } });
   assert.equal(badEmail.statusCode, 400);
 });
 
 test('signup : un champ non prévu (ex. "role") est sans effet — impossible de s\'auto-promouvoir admin', async () => {
   const res = await app.inject({ method: 'POST', url: '/auth/signup',
-    payload: { email: uniqueEmail(), password: STRONG_PASSWORD, role: 'admin' } });
+    payload: { preuve: await preuve(app), email: uniqueEmail(), password: STRONG_PASSWORD, role: 'admin' } });
   // Fastify (removeAdditional:true par défaut) retire silencieusement les champs hors
   // schéma plutôt que de rejeter la requête — donc 200, pas 400. Ce qui compte vraiment :
   // le serveur ne lit jamais req.body.role pour l'inscription, le rôle reste 'player'.

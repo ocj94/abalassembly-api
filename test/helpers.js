@@ -14,6 +14,16 @@ import crypto from 'node:crypto';
 // avec lui. On le désactive pour la durée de la suite ; son comportement (429
 // après le seuil) est un détail de @fastify/rate-limit, pas notre code métier.
 process.env.RATE_LIMIT_MAX_TEST_OVERRIDE = '100000';
+// idem pour les limites propres à la connexion et à l'inscription (test/protection.test.js les vérifie)
+process.env.RATE_LIMIT_AUTH_MAX_TEST_OVERRIDE = '100000';
+// preuve de travail de l'inscription : 4 bits (16 essais en moyenne) au lieu de 18 ; même code, même vérification
+process.env.PREUVE_BITS = process.env.PREUVE_BITS || '4';
+
+// demande un défi au serveur et le résout (src/preuve.js) : la pièce jointe de /auth/signup
+export async function preuve(app) {
+  const { resoudreDefi } = await import('../src/preuve.js');
+  return resoudreDefi((await app.inject({ method: 'GET', url: '/auth/defi' })).json().defi);
+}
 
 export async function makeApp() {
   const app = await build();
@@ -41,7 +51,8 @@ export async function signupUser(app, overrides = {}) {
   const res = await app.inject({
     method: 'POST',
     url: '/auth/signup',
-    payload: { email, password: overrides.password || STRONG_PASSWORD, username: overrides.username }
+    ...(overrides.ip ? { remoteAddress: overrides.ip } : {}),
+    payload: { email, password: overrides.password || STRONG_PASSWORD, username: overrides.username, preuve: await preuve(app) }
   });
   const body = res.json();
   return { email, password: overrides.password || STRONG_PASSWORD, user: body.user, token: body.token, res };

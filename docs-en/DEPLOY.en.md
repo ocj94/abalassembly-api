@@ -75,6 +75,9 @@ only trusts that header when it comes from a declared proxy:
   server from.
 - `TRUST_PROXY=true` is refused at startup.
 
+Without a declared proxy, the dedicated login (10 per minute) and signup (5 per
+hour) limits would apply to all players together: set it before opening.
+
 With Cloudflare in front of the reverse proxy, the latter must write the real
 address: accept only Cloudflare's ranges, and replace `X-Forwarded-For` with
 the `CF-Connecting-IP` header (with nginx: `set_real_ip_from` for each

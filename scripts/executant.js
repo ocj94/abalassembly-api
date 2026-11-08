@@ -19,6 +19,7 @@
 import os from 'node:os';
 import { Worker } from 'node:worker_threads';
 import { registre } from '../src/moteurIA.js';
+import { resoudreDefi } from '../src/preuveClient.js';
 
 const AIDE = `Exécutant Abalassembly : branche cette machine sur l'ordonnanceur de calcul.
 
@@ -76,7 +77,12 @@ async function brut(chemin, corps) {
 
 async function connexion() {
   if (!EMAIL || !MDP) throw new Error('donner --email (ou ABA_EMAIL) et la variable ABA_MDP, ou un jeton dans ABA_JETON');
-  const r = await brut('/auth/login', { email: EMAIL, password: MDP, otp: OTP });
+  let r = await brut('/auth/login', { email: EMAIL, password: MDP, otp: OTP });
+  // des mots de passe faux ont été tapés pour ce compte : le serveur demande une preuve de travail
+  if (r.statut === 401 && r.b.preuveRequise) {
+    const d = await brut('/auth/defi');
+    if (d.statut === 200 && d.b.defi) r = await brut('/auth/login', { email: EMAIL, password: MDP, otp: OTP, preuve: resoudreDefi(d.b.defi) });
+  }
   if (r.statut !== 200 || !r.b.token) { const e = new Error('connexion refusée : ' + (r.b.error || r.statut)); e.statut = r.statut; throw e; }
   jeton = r.b.token;
 }
