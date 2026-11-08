@@ -3,3 +3,5 @@ node_modules/
 *.log
 dist/
 coverage/
+# sauvegarde de Redis quand on le lance depuis ce dossier (essais locaux)
+dump.rdb
