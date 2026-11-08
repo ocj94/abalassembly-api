@@ -124,7 +124,7 @@ The game's Lab (see `index.html`) normally runs locally, in each player's `local
 
 The Lab decides **what** to compute: a *campaign*, two weight sets to settle in fixed-depth games. The scheduler decides **where and when**: each game is a *mission*, given to an *executor*. Verification decides whether the result counts. The scheduler knows no technology, only a contract every executor honours: executors can be plugged in and out at any time without touching the rest.
 
-- **Families**: `navigateur` (the browser — the game Lab's "Contribute" button, 🌐 Compute network tab), `node` (`scripts/executant.js`, on any PC or server), and `natif`, `serveur`, `boinc` reserved for future adapters. Each family has its switch (admin); each executor has its own (its owner can unplug it, the admin can cut it off).
+- **Families**: `navigateur` (the browser — the game Lab's "Contribute" button, 🌐 Compute network tab), `node` (`scripts/executant.js`, on any PC), `serveur` (the operator's machines: Docker containers of the `executant` service, reserved for the compute account), and `natif`, `boinc` reserved for future adapters. Each family has its switch (admin); each executor has its own (its owner can unplug it, the admin can cut it off). An account plugs in at most 8 live executors (64 for the compute account); a device switched off without unplugging stops counting after two leases without a heartbeat.
 - **The contract**: plug in (family, cores, SHA-256 fingerprint of the engine); claim a mission; send a heartbeat (the 60 s lease is renewed); hand in the result; unplug. A mission whose lease expires (tab closed, phone asleep, machine lost) goes back to the queue. Every attempt has its token: an executor coming back too late can't make a result count, and a mission only counts once.
 - **The choice**: the server assigns, never the executor. Same engine required, one mission per core, campaigns by priority, and a duration rule based on each executor's **measured speed**: a mission estimated too long for a browser (over 5 minutes) goes to a PC (up to an hour).
 - **Verification**: nothing an executor says is trusted. The server replays the game with the game's engine (`moteur/fil-<version>.js`, in a separate thread) and **searches three randomly drawn plies itself**, unknown to the executor in advance, which must be exactly the game's. Possible since game v3.18: at fixed depth, a game can be redone move for move (checked on 116 plies recomputed one by one, up to depth 3). Illegal move, opening that doesn't come from the seed, move that isn't the engine's, unfinished game or wrong winner: refused. Three refusals (more than accepted games) cut the executor off.
@@ -137,14 +137,23 @@ Plugging in a PC:
 ABA_MDP='…' node scripts/executant.js --api https://api.example.com --email me@example.com --coeurs 3 --nom "Living-room PC"
 ```
 
-Ctrl-C unplugs it cleanly (its missions go straight back to the queue). Useful server variables: `ORDO_BAIL_S` (lease duration, 60 s), `ORDO_VERIF_COUPS` (plies searched per result, 3), `ORDO_VERIF_DELAI_MS` (maximum duration of a verification, 120 s).
+Ctrl-C or SIGTERM unplug it cleanly (its missions go straight back to the queue). Once plugged in, it never stops on its own: server unreachable, token expired (it logs in again with its password), family unplugged or executor cut off, it waits and resumes. Every option has its environment variable (`ABA_API`, `ABA_EMAIL`, `ABA_FAMILLE`, `ABA_COEURS`, `ABA_NOM`…): `node scripts/executant.js --aide`.
+
+Plugging in containers (`serveur` family, see [DEPLOY.en.md](DEPLOY.en.md#compute-executors-in-containers)):
+
+```bash
+docker compose --profile calcul up -d --scale executant=3
+docker compose stop executant        # clean unplug (SIGTERM)
+```
+
+Useful server variables: `ORDO_BAIL_S` (lease duration, 60 s), `ORDO_VERIF_COUPS` (plies searched per result, 3), `ORDO_VERIF_DELAI_MS` (maximum duration of a verification, 120 s), `ORDO_EXECUTANTS_CALCUL` (live executors of the compute account, 64).
 
 ## Security & GDPR, built in
 
 - **argon2id** passwords, never stored in plain text
 - **JWT** with a revocable `jti` (logout via Redis); **no startup without a strong `JWT_SECRET`** (at least 32 characters, never the example value)
 - The account is **re-read from the database on every request**: a deleted account keeps no session, a removed role applies immediately (the role written in the token is never trusted)
-- **RBAC**: `requireRole('admin')` middleware; an admin is appointed on the server (`scripts/admin.js`), never through signup, and admin actions require **MFA**
+- **RBAC**: `requireRole('admin')` middleware; an admin is appointed on the server (`scripts/admin.js`), never through signup, and admin actions require **MFA**; the `calcul` role (same script) only grants plugging in `serveur` executors
 - **TOTP MFA** (RFC 6238, no dependency): `/mfa/*`, checked at login once enabled; a code works only once, 5 wrong codes lock the account's MFA for 15 minutes, `/mfa/setup` can no longer remove it
 - **Redis rate-limiting** (anti-brute-force), counted on the real address: `X-Forwarded-For` is only trusted from a declared proxy (`TRUST_PROXY`)
 - **Scores**: Elo, online wins and tournament XP are never declared by the client

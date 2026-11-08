@@ -11,9 +11,12 @@ running anything.
 - `Dockerfile` — production image, dependencies without build tools,
   runs as an unprivileged user, health probe on `/health`.
 - `docker-compose.yml` — the full stack (API + PostgreSQL + Redis) for a
-  VPS or a local trial.
+  VPS or a local trial, plus optional compute executors (`calcul` profile).
 - `.env.example` — every expected variable, documented.
-- `.github/workflows/test.yml` — the test suite and an engine sync check on every push.
+- `.github/workflows/test.yml` — the test suite, an engine sync check, and an
+  end-to-end trial of the Docker stack (`scripts/essai-docker.js`: image built,
+  database + Redis + API in production mode, two executors playing a campaign the
+  API verifies, then unplugged) on every push.
 
 ## Local trial, in three commands
 
@@ -27,6 +30,11 @@ curl localhost:3000/health
 
 Migrations run **explicitly**, not on container startup. A container that
 migrates itself replays the schema on every restart, and once per replica.
+
+In the stack, the database is only reachable over Docker's internal network and
+has no certificate: `DATABASE_URL` carries `?sslmode=disable` there (without it,
+`NODE_ENV=production` requires SSL and the API could not connect). A database
+hosted elsewhere keeps SSL (`DATABASE_CA`).
 
 Run `npm run migrate` **twice in a row**: `migrations/run.js` replays every
 `.sql` file on each run, with no tracking table. Every statement therefore
@@ -76,7 +84,7 @@ Cloudflare range, `real_ip_header CF-Connecting-IP`, then
 ## The compute network (`/ordo`)
 
 - **The game's CSP** currently allows no connection to the server: on opening day, add its address to `connect-src` (in the game's `src/00-html.part`), together with `BACKEND.enabled = true` and `BACKEND.url`.
-- **The engine**: after every game version that changes the worker code, `node scripts/importer-moteur.js <that version's index.html>`, then deploy. Otherwise up-to-date browsers can no longer plug in (the server refuses an engine it can't replay).
+- **The engine**: after every game version that changes the worker code, `node scripts/importer-moteur.js <that version's index.html>`, then deploy (Docker stack: `docker compose build`, the engine is copied into the image). Otherwise up-to-date browsers can no longer plug in (the server refuses an engine it can't replay).
 - **Verification** uses compute on the server (one thread, one verification at a time: a few seconds per game at depth 2). Limit it with `ORDO_VERIF_COUPS` on a small server.
 
 ## Administrators
@@ -88,11 +96,46 @@ up normally, then, on the server:
 
 ```bash
 node --env-file=.env scripts/admin.js nommer <email>     # or: retirer <email>
+# in the Docker stack:
+docker compose exec api node scripts/admin.js nommer <email>
 ```
 
 They must then enable MFA (`/mfa/setup` then `/mfa/enable`): admin actions
 refuse without it. The only one today is approving distributed-Lab candidates
 (`/lab/pending`, `/lab/job/:id/approve`, `/lab/job/:id/reject`).
+
+## Compute executors in containers
+
+The `executant` service of `docker-compose.yml` plugs the operator's machines into
+the scheduler, in the `serveur` family: it has its own switch, separate from the
+players' devices. Same image as the API, but the container gets neither the `.env`
+nor database access, only the API's address and a **compute account** with no
+admin rights (so it logs in without MFA; a leak of its password only yields
+missions, verified like all others).
+
+```bash
+# 1. the compute account signs up normally (site or /auth/signup), then:
+docker compose exec api node scripts/admin.js calcul <email>
+# 2. in .env: ABA_CALCUL_EMAIL, ABA_CALCUL_MDP, ABA_COEURS (cores per container, 2)
+# 3. plug in three containers, then unplug them
+docker compose --profile calcul up -d --scale executant=3
+docker compose logs -f executant
+docker compose stop executant
+```
+
+`docker compose stop` sends SIGTERM: each executor hands its running missions back
+to the queue before stopping. To pause everything without stopping the containers,
+the admin unplugs the `serveur` family (`POST /ordo/familles/serveur`
+`{"actif": false}`): they wait and resume when it comes back. Once plugged in, a
+container never stops on its own (server restarted, token expired: it waits, logs
+in again and resumes), so there is no restart loop. The API verifies results with
+the engine copied into the image (`moteur/`): rebuild the image after every
+`scripts/importer-moteur.js`.
+
+On machines other than the API's, run the same image with
+`ABA_API=https://api.example.com` (or `node scripts/executant.js --famille serveur`).
+The compute account plugs in at most 64 live executors at once
+(`ORDO_EXECUTANTS_CALCUL`).
 
 ## Before opening to the public
 

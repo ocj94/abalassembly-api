@@ -6,6 +6,14 @@
 #   docker compose up -d db redis
 #   docker compose run --rm api npm run migrate
 #   docker compose up -d api
+#
+# Exécutants de calcul (ordonnanceur, famille « serveur ») — facultatifs, profil `calcul` :
+#   1. s'inscrire avec le compte de calcul, puis :
+#        docker compose exec api node scripts/admin.js calcul <email>
+#   2. ABA_CALCUL_EMAIL et ABA_CALCUL_MDP dans .env (ABA_COEURS : cœurs par conteneur)
+#   3. docker compose --profile calcul up -d --scale executant=3   brancher 3 conteneurs
+#      docker compose stop executant                               les débrancher (proprement)
+#   L'interrupteur de la famille « serveur » (admin) les suspend sans les arrêter.
 
 services:
   db:
@@ -38,7 +46,10 @@ services:
     build: .
     env_file: .env
     environment:
-      DATABASE_URL: postgres://abal:${POSTGRES_PASSWORD:-abal}@db:5432/abalassembly
+      # sslmode=disable : la base n'est joignable que par le réseau interne de cette pile,
+      # et l'image postgres n'a pas de certificat. Sans lui, NODE_ENV=production exige SSL
+      # (src/db.js) et l'API ne se connecte pas. Base hébergée ailleurs : garder SSL.
+      DATABASE_URL: postgres://abal:${POSTGRES_PASSWORD:-abal}@db:5432/abalassembly?sslmode=disable
       REDIS_URL: redis://redis:6379
     depends_on:
       db: { condition: service_healthy }
@@ -46,6 +57,29 @@ services:
     ports:
       - "127.0.0.1:3000:3000"   # jamais expose directement : passer par un reverse proxy TLS
     restart: unless-stopped
+
+  # Un exécutant de l'ordonnanceur : il joue les missions de calcul du Labo avec le
+  # moteur du jeu (moteur/), et l'API vérifie chaque résultat. Même image que l'API,
+  # mais il ne reçoit ni .env ni accès à la base : seulement l'adresse de l'API et le
+  # compte de calcul (sans droits d'administration). Autant de conteneurs qu'on veut.
+  executant:
+    profiles: ["calcul"]
+    build: .
+    command: ["node", "scripts/executant.js"]
+    init: true                 # SIGTERM de `docker stop` → débranchement propre
+    environment:
+      ABA_API: http://api:3000
+      ABA_FAMILLE: serveur
+      ABA_EMAIL: ${ABA_CALCUL_EMAIL:-}
+      ABA_MDP: ${ABA_CALCUL_MDP:-}
+      ABA_COEURS: ${ABA_COEURS:-2}
+    cpus: ${ABA_COEURS:-2}
+    healthcheck:
+      disable: true            # la sonde de l'image est celle de l'API (/health)
+    depends_on:
+      api: { condition: service_healthy }
+    restart: unless-stopped
+    stop_grace_period: 15s
 
 volumes:
   pgdata:

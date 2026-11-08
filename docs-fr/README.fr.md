@@ -124,7 +124,7 @@ Le Labo du jeu (voir `index.html`) tourne normalement en local, dans le `localSt
 
 Le Labo décide **quoi** calculer : une *campagne*, deux jeux de poids à départager en parties à profondeur fixe. L'ordonnanceur décide **où et quand** : chaque partie est une *mission*, confiée à un *exécutant*. La vérification décide si le résultat compte. L'ordonnanceur ne connaît aucune technologie, seulement un contrat que tout exécutant respecte : on branche et on débranche des exécutants à tout moment sans toucher au reste.
 
-- **Les familles** : `navigateur` (le bouton « Contribuer » du Labo du jeu, onglet 🌐 Réseau de calcul), `node` (`scripts/executant.js`, sur n'importe quel PC ou serveur), et `natif`, `serveur`, `boinc` réservées aux adaptateurs à venir. Chaque famille a son interrupteur (admin) ; chaque exécutant a le sien (son propriétaire peut le débrancher, l'admin peut le couper).
+- **Les familles** : `navigateur` (le bouton « Contribuer » du Labo du jeu, onglet 🌐 Réseau de calcul), `node` (`scripts/executant.js`, sur n'importe quel PC), `serveur` (les machines de l'opérateur : conteneurs Docker du service `executant`, réservée au compte de calcul), et `natif`, `boinc` réservées aux adaptateurs à venir. Chaque famille a son interrupteur (admin) ; chaque exécutant a le sien (son propriétaire peut le débrancher, l'admin peut le couper). Un compte branche au plus 8 exécutants vivants (64 pour le compte de calcul) ; un appareil éteint sans se débrancher ne compte plus après deux baux sans signe de vie.
 - **Le contrat** : se brancher (famille, cœurs, empreinte SHA-256 du moteur) ; réclamer une mission ; donner signe de vie (le bail de 60 s se renouvelle) ; rendre le résultat ; se débrancher. Une mission dont le bail expire (onglet fermé, téléphone en veille, machine perdue) repart dans la file. Chaque tentative a son jeton : un exécutant revenu trop tard ne fait pas compter un résultat, et une mission n'est comptée qu'une fois.
 - **Le choix** : c'est le serveur qui attribue, jamais l'exécutant. Même moteur exigé, une mission par cœur, campagnes par priorité, et une règle de durée fondée sur la **vitesse mesurée** de chaque exécutant : une mission estimée trop longue pour un navigateur (plus de 5 minutes) va à un PC (jusqu'à une heure).
 - **La vérification** : rien de ce que dit un exécutant n'est cru. Le serveur rejoue la partie avec le moteur du jeu (`moteur/fil-<version>.js`, dans un fil séparé) et **recherche lui-même trois demi-coups tirés au hasard**, inconnus de l'exécutant à l'avance, qui doivent être exactement ceux de la partie. Possible depuis la v3.18 du jeu : à profondeur fixe, une partie se refait coup pour coup (vérifié sur 116 demi-coups recalculés un à un, jusqu'à la profondeur 3). Coup illégal, ouverture qui ne vient pas de la graine, coup qui n'est pas celui du moteur, partie inachevée ou vainqueur faux : refusé. Trois refus (plus que de parties acceptées) coupent l'exécutant.
@@ -137,7 +137,16 @@ Brancher un PC :
 ABA_MDP='…' node scripts/executant.js --api https://api.exemple.fr --email moi@exemple.fr --coeurs 3 --nom "PC du salon"
 ```
 
-Ctrl-C le débranche proprement (ses missions repartent tout de suite dans la file). Variables utiles côté serveur : `ORDO_BAIL_S` (durée du bail, 60 s), `ORDO_VERIF_COUPS` (demi-coups recherchés par résultat, 3), `ORDO_VERIF_DELAI_MS` (durée maximale d'une vérification, 120 s).
+Ctrl-C ou SIGTERM le débranchent proprement (ses missions repartent tout de suite dans la file). Une fois branché, il ne s'arrête plus de lui-même : serveur injoignable, jeton expiré (il se reconnecte avec son mot de passe), famille débranchée ou exécutant coupé, il attend et reprend. Toutes les options ont leur variable d'environnement (`ABA_API`, `ABA_EMAIL`, `ABA_FAMILLE`, `ABA_COEURS`, `ABA_NOM`…) : `node scripts/executant.js --aide`.
+
+Brancher des conteneurs (famille `serveur`, voir [DEPLOY.fr.md](DEPLOY.fr.md#exécutants-de-calcul-en-conteneurs)) :
+
+```bash
+docker compose --profile calcul up -d --scale executant=3
+docker compose stop executant        # débranchement propre (SIGTERM)
+```
+
+Variables utiles côté serveur : `ORDO_BAIL_S` (durée du bail, 60 s), `ORDO_VERIF_COUPS` (demi-coups recherchés par résultat, 3), `ORDO_VERIF_DELAI_MS` (durée maximale d'une vérification, 120 s), `ORDO_EXECUTANTS_CALCUL` (exécutants vivants du compte de calcul, 64).
 
 ## Sécurité & RGPD intégrés
 
@@ -146,7 +155,7 @@ Ctrl-C le débranche proprement (ses missions repartent tout de suite dans la fi
 - Mots de passe **argon2id**, jamais en clair
 - **JWT** avec `jti` révocable (logout via Redis) ; **pas de démarrage sans `JWT_SECRET`** solide (32 caractères au moins, jamais la valeur d'exemple)
 - Compte **relu en base à chaque requête** : un compte supprimé n'a plus aucune session, un rôle retiré s'applique tout de suite (le rôle écrit dans le jeton n'est jamais cru)
-- **RBAC** : middleware `requireRole('admin')` ; un admin se nomme sur le serveur (`scripts/admin.js`), jamais par l'inscription, et ses actions exigent la **MFA**
+- **RBAC** : middleware `requireRole('admin')` ; un admin se nomme sur le serveur (`scripts/admin.js`), jamais par l'inscription, et ses actions exigent la **MFA** ; le rôle `calcul` (même script) ne donne que le droit de brancher des exécutants `serveur`
 - **MFA TOTP** (RFC 6238, sans dépendance) : `/mfa/*`, vérifiée au login si activée ; un code ne sert qu'une fois, 5 codes faux bloquent la MFA du compte 15 minutes, `/mfa/setup` ne peut plus la retirer
 - **Rate-limiting** Redis (anti-bruteforce), compté sur la vraie adresse : `X-Forwarded-For` n'est cru que d'un relais déclaré (`TRUST_PROXY`)
 - **Scores** : l'Elo, les victoires en ligne et l'XP des tournois ne sont jamais déclarés par le client

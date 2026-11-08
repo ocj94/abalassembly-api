@@ -11,10 +11,13 @@ lancer quoi que ce soit.
 - `Dockerfile` — image de production, dépendances sans les outils de build,
   exécution en utilisateur non privilégié, sonde de santé sur `/health`.
 - `docker-compose.yml` — pile complète (API + PostgreSQL + Redis) pour un
-  VPS ou un essai local.
+  VPS ou un essai local, plus des exécutants de calcul facultatifs (profil
+  `calcul`).
 - `.env.example` — toutes les variables attendues, documentées.
-- `.github/workflows/test.yml` — suite de tests et contrôle de synchronisation
-  du moteur à chaque push.
+- `.github/workflows/test.yml` — suite de tests, contrôle de synchronisation
+  du moteur, et essai de bout en bout de la pile Docker (`scripts/essai-docker.js` :
+  image construite, base + Redis + API en production, deux exécutants qui jouent
+  une campagne vérifiée par l'API, puis débranchés) à chaque push.
 
 ## Essai local, en trois commandes
 
@@ -29,6 +32,11 @@ curl localhost:3000/health
 Les migrations sont lancées **explicitement**, pas au démarrage du conteneur.
 Un conteneur qui migre tout seul rejoue le schéma à chaque redémarrage et
 autant de fois qu'il y a de replicas.
+
+Dans la pile, la base n'est joignable que par le réseau interne de Docker et
+n'a pas de certificat : `DATABASE_URL` y porte `?sslmode=disable` (sans lui,
+`NODE_ENV=production` exige SSL et l'API ne se connectait pas). Une base hébergée
+ailleurs garde SSL (`DATABASE_CA`).
 
 Lance `npm run migrate` **deux fois de suite** : `migrations/run.js` rejoue
 tous les `.sql` à chaque exécution, sans table de suivi. Chaque instruction
@@ -78,7 +86,7 @@ CF-Connecting-IP`, puis `proxy_set_header X-Forwarded-For $remote_addr`).
 ## Le réseau de calcul (`/ordo`)
 
 - **La CSP du jeu** n'autorise aujourd'hui aucune connexion vers le serveur : le jour de l'ouverture, ajouter son adresse à `connect-src` (dans `src/00-html.part` du jeu), en même temps que `BACKEND.enabled = true` et `BACKEND.url`.
-- **Le moteur** : après chaque version du jeu qui change le fil de calcul, `node scripts/importer-moteur.js <index.html de cette version>`, puis déployer. Sinon les navigateurs à jour ne peuvent plus se brancher (le serveur refuse un moteur qu'il ne sait pas rejouer).
+- **Le moteur** : après chaque version du jeu qui change le fil de calcul, `node scripts/importer-moteur.js <index.html de cette version>`, puis déployer (pile Docker : `docker compose build`, le moteur est copié dans l'image). Sinon les navigateurs à jour ne peuvent plus se brancher (le serveur refuse un moteur qu'il ne sait pas rejouer).
 - **La vérification** consomme du calcul sur le serveur (un fil, une vérification à la fois : quelques secondes par partie à profondeur 2). La limiter avec `ORDO_VERIF_COUPS` si le serveur est petit.
 
 ## Administrateurs
@@ -90,12 +98,48 @@ s'inscrit normalement, puis, sur le serveur :
 
 ```bash
 node --env-file=.env scripts/admin.js nommer <email>     # ou : retirer <email>
+# dans la pile Docker :
+docker compose exec api node scripts/admin.js nommer <email>
 ```
 
 Il doit ensuite activer la MFA (`/mfa/setup` puis `/mfa/enable`) : les
 actions d'administration la refusent sans elle. La seule aujourd'hui est la
 validation des candidats du Labo distribué (`/lab/pending`,
 `/lab/job/:id/approve`, `/lab/job/:id/reject`).
+
+## Exécutants de calcul en conteneurs
+
+Le service `executant` de `docker-compose.yml` branche les machines de
+l'opérateur sur l'ordonnanceur, dans la famille `serveur` : elle a son propre
+interrupteur, séparé des appareils des joueurs. Même image que l'API, mais le
+conteneur ne reçoit ni le `.env` ni l'accès à la base, seulement l'adresse de
+l'API et un **compte de calcul** sans droits d'administration (il se connecte
+donc sans MFA ; une fuite de son mot de passe ne donne que des missions, vérifiées
+comme toutes les autres).
+
+```bash
+# 1. le compte de calcul s'inscrit normalement (site ou /auth/signup), puis :
+docker compose exec api node scripts/admin.js calcul <email>
+# 2. dans .env : ABA_CALCUL_EMAIL, ABA_CALCUL_MDP, ABA_COEURS (cœurs par conteneur, 2)
+# 3. brancher trois conteneurs, puis les débrancher
+docker compose --profile calcul up -d --scale executant=3
+docker compose logs -f executant
+docker compose stop executant
+```
+
+`docker compose stop` envoie SIGTERM : chaque exécutant rend ses missions en
+cours à la file avant de s'arrêter. Pour tout suspendre sans arrêter les
+conteneurs, l'admin débranche la famille `serveur` (`POST /ordo/familles/serveur`
+`{"actif": false}`) : ils attendent et reprennent quand elle revient. Un
+conteneur ne s'arrête jamais de lui-même une fois branché (serveur redémarré,
+jeton expiré : il attend, se reconnecte et reprend), donc pas de boucle de
+redémarrages. L'API vérifie les résultats avec le moteur copié dans l'image
+(`moteur/`) : reconstruire l'image après chaque `scripts/importer-moteur.js`.
+
+Sur d'autres machines que celle de l'API, lancer la même image avec
+`ABA_API=https://api.exemple.fr` (ou `node scripts/executant.js --famille serveur`).
+Le compte de calcul branche au plus 64 exécutants vivants à la fois
+(`ORDO_EXECUTANTS_CALCUL`).
 
 ## Avant d'ouvrir au public
 

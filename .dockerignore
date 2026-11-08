@@ -2,7 +2,6 @@
 .github
 node_modules
 test
-scripts
 .env
 .env.*
 !.env.example

@@ -20,6 +20,11 @@ COPY --from=deps --chown=node:node /app/node_modules ./node_modules
 COPY --chown=node:node package.json ./
 COPY --chown=node:node src ./src
 COPY --chown=node:node migrations ./migrations
+# le moteur du jeu : l'API en a besoin pour vérifier les missions de l'ordonnanceur
+COPY --chown=node:node moteur ./moteur
+# les seuls scripts utiles en production : nommer un rôle, et l'exécutant de calcul
+# (service `executant` de docker-compose.yml)
+COPY --chown=node:node scripts/admin.js scripts/executant.js ./scripts/
 
 USER node
 EXPOSE 3000

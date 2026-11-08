@@ -33,7 +33,10 @@ export const FAMILLES = ['navigateur', 'node', 'natif', 'serveur', 'boinc'];
 // durée qu'on accepte de confier d'un coup à chaque famille (un téléphone peut se mettre en veille)
 const DUREE_MAX_S = { navigateur: 300, node: 3600, natif: 3600, serveur: 3600, boinc: 86400 };
 const CROISSANCE = 6;            // une profondeur de plus coûte environ six fois plus (mesure prudente du Labo)
+// exécutants vivants par compte : un joueur a quelques appareils ; le compte de calcul de
+// l'opérateur peut en lancer davantage (docker compose --scale executant=N)
 const EXECUTANTS_PAR_COMPTE = 8;
+const executantsMax = (role) => (role === 'calcul' || role === 'admin') ? (Number(process.env.ORDO_EXECUTANTS_CALCUL) || 64) : EXECUTANTS_PAR_COMPTE;
 export const bailS = () => Number(process.env.ORDO_BAIL_S) || 60;
 const coupsVerifies = () => Math.max(1, Number(process.env.ORDO_VERIF_COUPS) || 3);
 const REJETS_AVANT_COUPURE = 3;
@@ -135,9 +138,18 @@ export default async function (app) {
         moteur: { type: 'string', pattern: '^[0-9a-f]{64}$' }, nom: { type: 'string', maxLength: 40 } } } }
     }, async (req, reply) => {
       const b = req.body;
+      // la famille « serveur » est celle des machines de l'opérateur (conteneurs Docker) : elle a son
+      // propre interrupteur, qu'un joueur ne doit pas pouvoir emprunter. Rôle relu en base (requireAuth).
+      if (b.famille === 'serveur' && req.user.role !== 'calcul' && req.user.role !== 'admin')
+        return reply.code(403).send({ error: 'la famille « serveur » est réservée au compte de calcul de l\'opérateur' });
       if (!moteurConnu(b.moteur)) return reply.code(409).send({ error: 'moteur inconnu du serveur : cette version du jeu ne peut pas encore calculer pour lui', moteurs: Object.keys(registre().moteurs) });
-      const { rows: n } = await db.query(`SELECT COUNT(*)::int AS n FROM ordo_executants WHERE user_id = $1 AND branche`, [req.user.sub]);
-      if (n[0].n >= EXECUTANTS_PAR_COMPTE) return reply.code(429).send({ error: 'trop d\'exécutants branchés sur ce compte (' + EXECUTANTS_PAR_COMPTE + ' au plus)' });
+      // seuls comptent les exécutants encore vivants : un appareil éteint sans se débrancher (onglet
+      // fermé, conteneur tué, coupure de courant) ne bloque pas le compte pour toujours
+      const max = executantsMax(req.user.role);
+      const { rows: n } = await db.query(
+        `SELECT COUNT(*)::int AS n FROM ordo_executants
+          WHERE user_id = $1 AND branche AND vu_at > now() - make_interval(secs => $2::int * 2)`, [req.user.sub, bailS()]);
+      if (n[0].n >= max) return reply.code(429).send({ error: 'trop d\'exécutants branchés sur ce compte (' + max + ' au plus)' });
       const { rows } = await db.query(
         `INSERT INTO ordo_executants (user_id, famille, nom, coeurs, moteur) VALUES ($1, $2, $3, $4, $5)
          RETURNING id, famille, coeurs, branche, actif`, [req.user.sub, b.famille, b.nom || null, b.coeurs, b.moteur]);

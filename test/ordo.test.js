@@ -10,6 +10,8 @@ import { db } from '../src/db.js';
 import { totpCode } from '../src/totp.js';
 import { changerRole } from '../scripts/admin.js';
 import { registre, creerFil, jouerMission } from '../src/moteurIA.js';
+import { spawn, spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 let app, admin, fil;
 const authed = (t) => ({ authorization: 'Bearer ' + t });
@@ -204,4 +206,83 @@ test('un exécutant ne voit et ne pilote que les siens', async () => {
   assert.equal((await app.inject({ method: 'POST', url: '/ordo/missions/reclamer', headers: b.h, payload: { executant: a.id } })).statusCode, 404);
   const mes = (await app.inject({ method: 'GET', url: '/ordo/mes-executants', headers: a.h })).json().executants;
   assert.deepEqual(mes.map(x => x.id), [a.id]);
+});
+
+// ─── v3.18 bis : la famille « serveur » (conteneurs Docker de l'opérateur) et l'exécutant Node ───
+const CLI = fileURLToPath(new URL('../scripts/executant.js', import.meta.url));
+
+test('🐳 la famille « serveur » est réservée au compte de calcul (et à l\'admin) ; le rôle se retire', async () => {
+  const brancher = (u) => app.inject({ method: 'POST', url: '/ordo/executants', headers: authed(u.token), payload: { famille: 'serveur', coeurs: 2, moteur: MOTEUR } });
+  const joueur = await signupUser(app);
+  const r = await brancher(joueur);
+  assert.equal(r.statusCode, 403); assert.match(r.json().error, /compte de calcul/);
+  assert.equal((await changerRole(joueur.email, 'calcul')).ok, true);
+  assert.equal((await brancher(joueur)).statusCode, 200, 'le même jeton suffit : le rôle est relu en base');
+  assert.equal((await brancher(admin)).statusCode, 200);
+  await changerRole(joueur.email, 'player');
+  assert.equal((await brancher(joueur)).statusCode, 403, 'rôle retiré : effet immédiat');
+  await assert.rejects(changerRole(joueur.email, 'root'), /rôle inconnu/);
+});
+
+test('🔌 un appareil éteint sans se débrancher ne bloque pas son compte ; le compte de calcul en branche davantage', async () => {
+  const u = await signupUser(app);
+  const ids = [];
+  for (let i = 0; i < 8; i++) ids.push((await executant('node', 1, u)).id);
+  const trop = await app.inject({ method: 'POST', url: '/ordo/executants', headers: authed(u.token), payload: { famille: 'node', coeurs: 1, moteur: MOTEUR } });
+  assert.equal(trop.statusCode, 429);
+  // huit conteneurs tués (ou onglets fermés) sans débranchement : plus de signe de vie depuis une heure
+  await db.query(`UPDATE ordo_executants SET vu_at = now() - interval '1 hour' WHERE id = ANY($1::uuid[])`, [ids]);
+  await executant('node', 1, u);
+  const calcul = await signupUser(app);
+  await changerRole(calcul.email, 'calcul');
+  for (let i = 0; i < 10; i++) await executant('serveur', 1, calcul);
+});
+
+test('🖥️ scripts/executant.js : --aide, famille inconnue, puis branché il joue, se reconnecte, suit l\'interrupteur, et SIGTERM le débranche', { timeout: 120000 }, async () => {
+  const aide = spawnSync(process.execPath, [CLI, '--aide'], { encoding: 'utf8', env: { PATH: process.env.PATH } });
+  assert.equal(aide.status, 0); assert.match(aide.stdout, /ABA_FAMILLE/);
+  const faux = spawnSync(process.execPath, [CLI, '--famille', 'boinc'], { encoding: 'utf8', env: { PATH: process.env.PATH } });
+  assert.equal(faux.status, 1); assert.match(faux.stderr, /famille inconnue/);
+
+  await avecEnv('ORDO_BAIL_S', '3', async () => {      // signe de vie chaque seconde
+    await campagne({ paires: 2 });
+    await app.listen({ port: 0, host: '127.0.0.1' });
+    const port = app.server.address().port;
+    const calcul = await signupUser(app);
+    await changerRole(calcul.email, 'calcul');
+    // un jeton révoqué au départ : l'exécutant doit se reconnecter seul avec son mot de passe
+    const perime = calcul.token;
+    await app.inject({ method: 'POST', url: '/auth/logout', headers: authed(perime) });
+    const p = spawn(process.execPath, [CLI], { env: { PATH: process.env.PATH, ABA_API: 'http://127.0.0.1:' + port, ABA_FAMILLE: 'serveur',
+      ABA_EMAIL: calcul.email, ABA_MDP: calcul.password, ABA_JETON: perime, ABA_COEURS: '1', ABA_NOM: 'essai-cli', ABA_ATTENTE_MS: '300' } });
+    let out = '';
+    p.stdout.on('data', (d) => { out += d; }); p.stderr.on('data', (d) => { out += d; });
+    const fin = new Promise((res) => p.on('exit', (code, signal) => res({ code, signal })));
+    const attendre = async (re, ms = 60000) => {
+      const t0 = Date.now();
+      while (!re.test(out)) { if (Date.now() - t0 > ms) throw new Error('attendu ' + re + ', sortie :\n' + out); await dormir(100); }
+    };
+    const famille = (actif) => app.inject({ method: 'POST', url: '/ordo/familles/serveur', headers: authed(admin.token), payload: { actif } });
+    try {
+      await attendre(/🔑 session renouvelée/);
+      await attendre(/🔌 branché .* famille serveur, 1 cœur/);
+      await attendre(/✓ mission \d+ .* vérifiée, comptée/);
+      assert.equal((await famille(false)).statusCode, 200);
+      await attendre(/⏸ en attente : la famille « serveur » est débranchée/);
+      await famille(true);
+      await attendre(/▶ reprise/);
+      p.kill('SIGTERM');
+      const { code } = await fin;
+      assert.equal(code, 0, out);
+      assert.match(out, /SIGTERM : débranchement/);
+      assert.match(out, /  débranché(\n| :)/);
+      const { rows } = await db.query(
+        `SELECT e.branche, e.faites, (SELECT COUNT(*)::int FROM ordo_tentatives t WHERE t.executant_id = e.id AND t.etat = 'en_cours') AS en_cours
+           FROM ordo_executants e JOIN users u ON u.id = e.user_id WHERE u.email = $1 AND e.nom = 'essai-cli'`, [calcul.email]);
+      assert.equal(rows.length, 1);
+      assert.equal(rows[0].branche, false, 'débranché par SIGTERM');
+      assert.ok(rows[0].faites >= 1);
+      assert.equal(rows[0].en_cours, 0, 'aucune mission gardée');
+    } finally { p.kill('SIGKILL'); await famille(true); }
+  });
 });
