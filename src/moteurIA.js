@@ -46,6 +46,11 @@ export function creerFil(sha) {
   vm.createContext(bac);
   vm.runInContext(codeMoteur(sha), bac, { filename: 'fil-de-calcul.js' });
   return {
+    // appelle une fonction écrite pour le moteur (src : une expression de fonction) avec ces arguments
+    evaluer(src, args) {
+      bac.__a = args;
+      try { return vm.runInContext('(' + src + ').apply(null, __a)', bac); } finally { bac.__a = null; }
+    },
     message(d) {
       let rendu = null;
       bac.postMessage = (m) => { rendu = m; };
@@ -65,6 +70,33 @@ export function messagePartie(mi, extra) {
     msPerMove: 1e9, maxPlies: mi.maxPlies, drawWin: mi.drawWin, ouverture: mi.ouverture, equilibre: mi.equilibre,
     cfgA: cfg, cfgB: cfg, arbitrage: mi.arbitrage, depart: mi.depart || null
   }, extra || {});
+}
+
+/* Les positions d'une partie rendue, pour la base d'apprentissage (scripts/exporter-positions.js) :
+   la partie est rejouée coup par coup dans le moteur, depuis le départ standard (ou la
+   position de départ de la mission). Pour chaque position avant un coup : le plateau en
+   61 caractères dans l'ordre des cases ('b' noir, 'w' blanc, '.' vide : le format même du
+   moteur pour une position de départ), le camp au trait, les billes sorties, et le score
+   du juge actuel (evaluateBoard avec les poids de la campagne), vu du camp au trait. */
+export function positionsDePartie(fil, mi, coups) {
+  return fil.evaluer(`(function (coups, w, depart) {
+    if (depart) { _duelDepart(depart); } else { _duelSetup(); }
+    var col = depart && depart.t ? depart.t : 'black', out = [], i, r, c;
+    var cle = function (x) { return x.cells.map(function (k) { return k.r + ',' + k.c; }).sort().join('|') + '>' + x.dir.q + ',' + x.dir.r; };
+    EVAL_W = w;
+    for (i = 0; i < coups.length; i++) {
+      var s = '';
+      for (r = 0; r < 9; r++) for (c = 0; c < ROWS[r]; c++) { var v = board[r + ',' + c]; s += v === 'black' ? 'b' : v === 'white' ? 'w' : '.'; }
+      out.push({ p: i, trait: col === 'black' ? 'b' : 'w', plateau: s, pb: capturedByBlack, pw: capturedByWhite, eval: Math.round(evaluateBoard(col)) });
+      var k = cle(coups[i]), m = getAllMovesForColor(col).find(function (x) { return cle(x) === k; });
+      if (!m) throw new Error('coup illegal au demi-coup ' + (i + 1));
+      applyMove(m, col); col = col === 'black' ? 'white' : 'black';
+    }
+    var f = '';      // et la position finale, après le dernier coup
+    for (r = 0; r < 9; r++) for (c = 0; c < ROWS[r]; c++) { var v2 = board[r + ',' + c]; f += v2 === 'black' ? 'b' : v2 === 'white' ? 'w' : '.'; }
+    out.push({ p: coups.length, trait: col === 'black' ? 'b' : 'w', plateau: f, pb: capturedByBlack, pw: capturedByWhite, eval: Math.round(evaluateBoard(col)) });
+    return out;
+  })`, [coups, mi.poidsA, mi.depart || null]);
 }
 
 const coupCompact = (x) => ({ cells: x.cells.map((c) => ({ r: c.r, c: c.c })), dir: { q: x.dir.q, r: x.dir.r } });

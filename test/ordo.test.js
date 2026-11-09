@@ -288,3 +288,71 @@ test('🖥️ scripts/executant.js : --aide, famille inconnue, puis branché il 
     } finally { p.kill('SIGKILL'); await famille(true); }
   });
 });
+
+// ─── v3.24 : campagnes « auto-jeu » et base de positions (scripts/exporter-positions.js) ───
+test('🧠 auto-jeu : un seul jeu de poids, une graine par partie, résultat vérifié, bilan en positions', async () => {
+  // un duel exige toujours poidsB et paires ; l'autojeu exige parties
+  const sansB = await app.inject({ method: 'POST', url: '/ordo/campagnes', headers: authed(admin.token), payload: { nom: 'x', poidsA: P, profondeur: 1, paires: 2 } });
+  assert.equal(sansB.statusCode, 400);
+  const sansN = await app.inject({ method: 'POST', url: '/ordo/campagnes', headers: authed(admin.token), payload: { type: 'autojeu', nom: 'x', poidsA: P, profondeur: 1 } });
+  assert.equal(sansN.statusCode, 400);
+  await db.query(`UPDATE ordo_campagnes SET etat = 'finie' WHERE etat <> 'finie'`);
+  const c = await app.inject({ method: 'POST', url: '/ordo/campagnes', headers: authed(admin.token),
+    payload: { type: 'autojeu', nom: 'base 1', poidsA: P, profondeur: 1, parties: 3, maxPlies: 14, ouverture: 4 } });
+  assert.equal(c.statusCode, 200, c.body);
+  assert.equal(c.json().missions, 3, 'une mission par partie (pas de paires : mêmes poids des deux côtés)');
+  const cid = c.json().campagne;
+  const { rows } = await db.query(`SELECT couleur_a, graine FROM ordo_missions WHERE campagne_id = $1`, [cid]);
+  assert.deepEqual([...new Set(rows.map(r => r.couleur_a))], ['black']);
+  assert.equal(new Set(rows.map(r => String(r.graine))).size, 3, 'graines distinctes : parties distinctes');
+  const camp = (await app.inject({ method: 'GET', url: '/ordo/campagnes/' + cid, headers: authed(admin.token) })).json();
+  assert.equal(camp.campagne.type, 'autojeu');
+  assert.deepEqual(camp.campagne.poids_b, camp.campagne.poids_a);
+
+  const e = await executant('node', 1);
+  let plies = 0;
+  for (let i = 0; i < 3; i++) {
+    const r = (await reclamer(e)).json();
+    assert.deepEqual(r.mission.poidsB, r.mission.poidsA);
+    const res = jouerMission(fil, r.mission); plies += res.plies;
+    const v = await rendre(e, r.tentative, res);
+    assert.equal(v.statusCode, 200, v.body);
+    assert.equal(v.json().compte, true, 'vérifiée par recalcul comme une partie de duel');
+  }
+  const etat = (await app.inject({ method: 'GET', url: '/ordo/etat' })).json();
+  const b = etat.campagnes.find(x => x.id === cid);
+  assert.equal(b.type, 'autojeu');
+  assert.equal(b.bilan.parties, 3);
+  assert.equal(b.bilan.positions, plies);
+  assert.equal(b.bilan.noir + b.bilan.blanc + b.bilan.nulles, 3);
+  assert.equal(b.bilan.elo, undefined, 'ni Elo ni SPRT sans adversaire');
+
+  // la base : une ligne par position (départ, chaque coup, position finale), étiquetée par la fin de la partie
+  const { exporter } = await import('../scripts/exporter-positions.js');
+  let texte = '';
+  const r = await exporter(cid, async (s) => { texte += s; }, {});
+  assert.equal(r.parties, 3);
+  const lignes = texte.trim().split('\n').map(l => JSON.parse(l));
+  assert.equal(lignes.length, plies + 3, 'chaque demi-coup + la position finale de chaque partie');
+  const parMission = {};
+  for (const l of lignes) (parMission[l.m] = parMission[l.m] || []).push(l);
+  const { rows: ms } = await db.query(`SELECT id, vainqueur, plies FROM ordo_missions WHERE campagne_id = $1`, [cid]);
+  for (const m of ms) {
+    const L = parMission[m.id];
+    assert.equal(L.length, m.plies + 1);
+    assert.equal(L[0].plateau, 'wwwwwwwwwww..www.............................bbb..bbbbbbbbbbb', 'départ standard');
+    assert.ok(L.every(l => l.plateau.length === 61 && /^[bw.]+$/.test(l.plateau)));
+    assert.ok(L.every((l, i) => l.trait === (i % 2 === 0 ? 'b' : 'w')), 'les camps alternent');
+    assert.ok(L.every(l => l.ouv === (l.p < 4)), 'les 4 demi-coups d\'ouverture tirée au hasard sont marqués');
+    // le résultat est vu du camp au trait : opposé d'une ligne à l'autre, sauf nulle
+    const attendu = (l) => m.vainqueur === 'D' ? 0 : ((m.vainqueur === 'A') === (l.trait === 'b') ? 1 : -1);
+    assert.ok(L.every(l => l.resultat === attendu(l)));
+    assert.ok(L.every(l => Number.isInteger(l.eval)));
+  }
+  let csv = '';
+  const r2 = await exporter(cid, async (s) => { csv += s; }, { csv: true, sansOuverture: true });
+  const lc = csv.trim().split('\n');
+  assert.equal(lc[0], 'c,m,p,trait,plateau,pb,pw,eval,resultat,fin,ouv');
+  assert.equal(lc.length - 1, r2.positions);
+  assert.equal(r2.positions, plies + 3 - 3 * 4, 'sans les positions d\'ouverture');
+});

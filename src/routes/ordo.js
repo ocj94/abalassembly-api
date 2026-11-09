@@ -85,8 +85,24 @@ async function rendreSesMissions(executantId, etat) {
   return rows.length;
 }
 
+// autojeu : pas d'adversaire, donc ni Elo ni SPRT ; ce qui compte, c'est la base produite
+async function bilanAutojeu(id) {
+  const { rows } = await db.query(
+    `SELECT vainqueur, pourquoi, COUNT(*)::int AS n, COALESCE(SUM(plies), 0)::int AS plies
+       FROM ordo_missions WHERE campagne_id = $1 AND etat = 'faite' GROUP BY vainqueur, pourquoi`, [id]);
+  let parties = 0, positions = 0, noir = 0, blanc = 0, nulles = 0; const fins = {};
+  for (const r of rows) {
+    parties += r.n; positions += r.plies; fins[r.pourquoi] = (fins[r.pourquoi] || 0) + r.n;
+    // couleur_a vaut toujours 'black' en autojeu : A, ce sont les Noirs
+    if (r.vainqueur === 'A') noir += r.n; else if (r.vainqueur === 'B') blanc += r.n; else nulles += r.n;
+  }
+  return { type: 'autojeu', parties, positions, noir, blanc, nulles, fins };
+}
+
 // pentanomial (paires dont les deux parties sont faites), Elo et SPRT d'une campagne
 export async function bilanCampagne(id) {
+  const { rows: t } = await db.query(`SELECT type FROM ordo_campagnes WHERE id = $1`, [id]);
+  if (t[0] && t[0].type === 'autojeu') return bilanAutojeu(id);
   const { rows } = await db.query(`SELECT paire, vainqueur FROM ordo_missions WHERE campagne_id = $1 AND etat = 'faite'`, [id]);
   let W = 0, D = 0, L = 0; const parPaire = {};
   for (const r of rows) {
@@ -121,9 +137,9 @@ export default async function (app) {
     const mis = await db.query(
       `SELECT m.etat, COUNT(*)::int AS n FROM ordo_missions m JOIN ordo_campagnes c ON c.id = m.campagne_id
         WHERE c.etat <> 'finie' GROUP BY m.etat`);
-    const camp = await db.query(`SELECT id, nom, paires, etat, reglages FROM ordo_campagnes WHERE etat <> 'finie' ORDER BY priorite, created_at`);
+    const camp = await db.query(`SELECT id, nom, type, paires, etat, reglages FROM ordo_campagnes WHERE etat <> 'finie' ORDER BY priorite, created_at`);
     const campagnes = [];
-    for (const c of camp.rows) campagnes.push({ id: Number(c.id), nom: c.nom, paires: c.paires, etat: c.etat, profondeur: c.reglages.profondeur, bilan: await bilanCampagne(c.id) });
+    for (const c of camp.rows) campagnes.push({ id: Number(c.id), nom: c.nom, type: c.type, paires: c.paires, etat: c.etat, profondeur: c.reglages.profondeur, bilan: await bilanCampagne(c.id) });
     return { familles: fam.rows.map(f => ({ famille: f.famille, actif: f.actif, branches: Number(f.branches) })),
       missions: Object.fromEntries(mis.rows.map(r => [r.etat, r.n])), campagnes, moteurs: Object.keys(registre().moteurs) };
   });
@@ -326,41 +342,52 @@ export default async function (app) {
     a.addHook('preHandler', requireMfa);
 
     a.post('/campagnes', {
-      schema: { body: { type: 'object', required: ['nom', 'poidsA', 'poidsB', 'profondeur', 'paires'], additionalProperties: false, properties: {
+      // type « duel » (défaut) : poidsA contre poidsB, en paires (couleurs échangées) ;
+      // type « autojeu » : poidsA contre lui-même, `parties` parties à graines distinctes (migration 009)
+      schema: { body: { type: 'object', required: ['nom', 'poidsA', 'profondeur'], additionalProperties: false, properties: {
+        type: { type: 'string', enum: ['duel', 'autojeu'], default: 'duel' },
         nom: { type: 'string', minLength: 1, maxLength: 60 }, poidsA: poidsSchema, poidsB: poidsSchema,
         profondeur: { type: 'integer', minimum: 1, maximum: 4 }, paires: { type: 'integer', minimum: 1, maximum: 5000 },
+        parties: { type: 'integer', minimum: 1, maximum: 5000 },
         maxPlies: { type: 'integer', minimum: 10, maximum: 120, default: 80 }, ouverture: { type: 'integer', minimum: 0, maximum: 12, default: 6 },
         equilibre: { type: 'number', minimum: 50, maximum: 5000, default: 600 }, drawWin: { type: 'number', minimum: 0, maximum: 5000, default: 300 },
         arbitrage: { type: 'integer', enum: [1, 2], default: 2 }, priorite: { type: 'integer', minimum: 0, maximum: 3, default: 2 },
         moteur: { type: 'string', pattern: '^[0-9a-f]{64}$' } } } }
     }, async (req, reply) => {
-      const b = req.body, moteur = b.moteur || registre().defaut;
+      const b = req.body, moteur = b.moteur || registre().defaut, auto = b.type === 'autojeu';
+      if (auto ? !b.parties : (!b.poidsB || !b.paires))
+        return reply.code(400).send({ error: auto ? 'autojeu : préciser parties' : 'duel : préciser poidsB et paires' });
       if (!moteur || !moteurConnu(moteur)) return reply.code(409).send({ error: 'moteur inconnu du serveur' });
+      const poidsB = auto ? b.poidsA : b.poidsB, nb = auto ? b.parties : b.paires;
       const reglages = { profondeur: b.profondeur, maxPlies: b.maxPlies, ouverture: b.ouverture, equilibre: b.equilibre, drawWin: b.drawWin, arbitrage: b.arbitrage };
       const client = await db.connect();
       try {
         await client.query('BEGIN');
         const { rows } = await client.query(
-          `INSERT INTO ordo_campagnes (nom, moteur, poids_a, poids_b, reglages, paires, priorite, cree_par)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
-          [b.nom, moteur, JSON.stringify(b.poidsA), JSON.stringify(b.poidsB), JSON.stringify(reglages), b.paires, b.priorite, req.user.sub]);
+          `INSERT INTO ordo_campagnes (nom, type, moteur, poids_a, poids_b, reglages, paires, priorite, cree_par)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
+          [b.nom, b.type, moteur, JSON.stringify(b.poidsA), JSON.stringify(poidsB), JSON.stringify(reglages), nb, b.priorite, req.user.sub]);
         const id = rows[0].id;
-        // une graine par paire : les deux parties partent de la même ouverture, couleurs échangées
+        // duel : une graine par paire, les deux parties partent de la même ouverture, couleurs échangées.
+        // autojeu : une graine par partie (mêmes poids des deux côtés : échanger les couleurs
+        // redonnerait exactement la même partie), A joue toujours les Noirs.
         const vals = [], args = [id];
-        for (let p = 0; p < b.paires; p++) {
+        for (let p = 0; p < nb; p++) {
           const g = crypto.randomInt(1, 2147483647);
           args.push(p, g); const i = args.length;
-          vals.push(`($1, $${i - 1}, 'black', $${i})`, `($1, $${i - 1}, 'white', $${i})`);
+          vals.push(`($1, $${i - 1}, 'black', $${i})`);
+          if (!auto) vals.push(`($1, $${i - 1}, 'white', $${i})`);
         }
+        // une seule requête : au plus 1 + 2 × 5 000 paramètres, sous la limite de PostgreSQL (65 535)
         await client.query(`INSERT INTO ordo_missions (campagne_id, paire, couleur_a, graine) VALUES ${vals.join(',')}`, args);
         await client.query('COMMIT');
-        return { ok: true, campagne: Number(id), missions: 2 * b.paires };
+        return { ok: true, campagne: Number(id), type: b.type, missions: auto ? nb : 2 * nb };
       } catch (err) { await client.query('ROLLBACK'); throw err; } finally { client.release(); }
     });
 
     const cParams = { type: 'object', properties: { id: { type: 'integer', minimum: 1 } } };
     a.get('/campagnes/:id', { schema: { params: cParams } }, async (req, reply) => {
-      const { rows } = await db.query(`SELECT id, nom, moteur, poids_a, poids_b, reglages, paires, priorite, etat, created_at FROM ordo_campagnes WHERE id = $1`, [req.params.id]);
+      const { rows } = await db.query(`SELECT id, nom, type, moteur, poids_a, poids_b, reglages, paires, priorite, etat, created_at FROM ordo_campagnes WHERE id = $1`, [req.params.id]);
       if (!rows[0]) return reply.code(404).send({ error: 'campagne inconnue' });
       const { rows: et } = await db.query(`SELECT etat, COUNT(*)::int AS n FROM ordo_missions WHERE campagne_id = $1 GROUP BY etat`, [req.params.id]);
       const { rows: fam } = await db.query(

@@ -131,6 +131,14 @@ Le Labo décide **quoi** calculer : une *campagne*, deux jeux de poids à dépar
 - **Le choix** : c'est le serveur qui attribue, jamais l'exécutant. Même moteur exigé, une mission par cœur, campagnes par priorité, et une règle de durée fondée sur la **vitesse mesurée** de chaque exécutant : une mission estimée trop longue pour un navigateur (plus de 5 minutes) va à un PC (jusqu'à une heure).
 - **La vérification** : rien de ce que dit un exécutant n'est cru. Le serveur rejoue la partie avec le moteur du jeu (`moteur/fil-<version>.js`, dans un fil séparé) et **recherche lui-même trois demi-coups tirés au hasard**, inconnus de l'exécutant à l'avance, qui doivent être exactement ceux de la partie. Possible depuis la v3.18 du jeu : à profondeur fixe, une partie se refait coup pour coup (vérifié sur 116 demi-coups recalculés un à un, jusqu'à la profondeur 3). Coup illégal, ouverture qui ne vient pas de la graine, coup qui n'est pas celui du moteur, partie inachevée ou vainqueur faux : refusé. Trois refus (plus que de parties acceptées) coupent l'exécutant.
 - **Le bilan** : victoires, nulles, défaites de A, pentanomial par paire (chaque paire joue la même ouverture, couleurs échangées), Elo avec sa marge, SPRT (pas de conclusion avant 30 parties).
+- **L'auto-jeu** (v3.24, migration 009) : `type: 'autojeu'` sur `POST /ordo/campagnes`, avec `poidsA` et `parties` (sans `poidsB` ni `paires`). Un seul jeu de poids joue contre lui-même, une graine par partie (une ouverture tirée au hasard chacune), vérifié comme un duel ; le bilan compte les parties, les positions et le partage Noirs / nulles / Blancs, sans Elo ni SPRT. La base de positions s'exporte ensuite :
+
+  ```bash
+  node --env-file=.env scripts/exporter-positions.js <campagne> > positions.ndjson          # ou --csv, --sans-ouverture
+  docker compose exec -T api node scripts/exporter-positions.js <campagne> > positions.ndjson
+  ```
+
+  Une ligne par position : `plateau` (61 cases, `b` `w` `.`), `trait`, billes sorties (`pb`, `pw`), `eval` (le juge actuel, vu du camp au trait), `resultat` (1, 0, -1 vu du camp au trait), `fin`, `ouv` (ouverture tirée au hasard). C'est la base d'un réseau de neurones qui tournera « en ombre » à côté du juge actuel, sans le remplacer.
 - **Le moteur** : `node scripts/importer-moteur.js <index.html du jeu>` inscrit le fil de calcul d'une version du jeu dans `moteur/registre.json`. Un navigateur dont la version du jeu n'est pas inscrite ne peut pas se brancher (409). À refaire à chaque version du jeu qui change le fil de calcul.
 
 Brancher un PC :

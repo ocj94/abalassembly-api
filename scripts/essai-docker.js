@@ -69,12 +69,12 @@ try {
     const m = await import('/app/src/moteurIA.js'), r = m.registre();
     let integre = false; try { m.codeMoteur(r.defaut); integre = true; } catch (e) {}
     console.log(JSON.stringify({ uid: process.getuid(), defaut: r.defaut, version: r.defaut && r.moteurs[r.defaut].version, integre,
-      presents: ['moteur', 'scripts/admin.js', 'scripts/executant.js', 'src/verificateurFil.js', 'src/preuveClient.js'].filter((f) => fs.existsSync(f)),
+      presents: ['moteur', 'scripts/admin.js', 'scripts/executant.js', 'src/verificateurFil.js', 'src/preuveClient.js', 'scripts/exporter-positions.js'].filter((f) => fs.existsSync(f)),
       absents: ['test', '.env', '.git', 'scripts/check-engine-sync.js', 'scripts/essai-docker.js'].filter((f) => !fs.existsSync(f)) }));`],
   { sortie: true }).trim().split('\n').pop());
   verifier(inv.uid !== 0, 'l\'image ne tourne pas en root (uid ' + inv.uid + ')');
   verifier(inv.integre, 'moteur ' + inv.version + ' présent et intact (empreinte ' + String(inv.defaut).slice(0, 12) + '…)');
-  verifier(inv.presents.length === 5, 'moteur, admin.js, executant.js, le fil de vérification et la preuve de travail sont dans l\'image');
+  verifier(inv.presents.length === 6, 'moteur, admin.js, executant.js, exporter-positions.js, le fil de vérification et la preuve de travail sont dans l\'image');
   verifier(inv.absents.length === 5, 'ni tests, ni .env, ni .git, ni scripts de développement dans l\'image');
   const aide = compose(['run', '--rm', '--no-deps', '-T', 'executant', 'node', 'scripts/executant.js', '--aide'], { sortie: true });
   verifier(/ABA_FAMILLE/.test(aide), 'l\'exécutant répond à --aide dans le conteneur');
@@ -119,6 +119,12 @@ try {
   verifier(ex.reduce((n, x) => n + x.faites, 0) === 4, 'et ils ont fait les 4 parties à eux deux');
   const journal = compose(['logs', '--no-color', 'executant'], { sortie: true });
   verifier((journal.match(/SIGTERM : débranchement/g) || []).length === 2, 'chacun a reçu SIGTERM et s\'est débranché lui-même');
+
+  etape('base de positions (v3.24) : scripts/exporter-positions.js dans le conteneur');
+  const base = compose(['exec', '-T', 'api', 'node', 'scripts/exporter-positions.js', String(c.campagne)], { sortie: true }).trim().split('\n').map((l) => JSON.parse(l));
+  const parMission = new Set(base.map((l) => l.m));
+  verifier(parMission.size === 4 && base.every((l) => l.plateau.length === 61 && [1, 0, -1].includes(l.resultat)),
+    base.length + ' positions des 4 parties, chacune étiquetée par la fin de sa partie');
   ok = true;
 } catch (e) {
   console.error('\n' + e.message);

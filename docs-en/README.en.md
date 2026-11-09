@@ -131,6 +131,14 @@ The Lab decides **what** to compute: a *campaign*, two weight sets to settle in 
 - **The choice**: the server assigns, never the executor. Same engine required, one mission per core, campaigns by priority, and a duration rule based on each executor's **measured speed**: a mission estimated too long for a browser (over 5 minutes) goes to a PC (up to an hour).
 - **Verification**: nothing an executor says is trusted. The server replays the game with the game's engine (`moteur/fil-<version>.js`, in a separate thread) and **searches three randomly drawn plies itself**, unknown to the executor in advance, which must be exactly the game's. Possible since game v3.18: at fixed depth, a game can be redone move for move (checked on 116 plies recomputed one by one, up to depth 3). Illegal move, opening that doesn't come from the seed, move that isn't the engine's, unfinished game or wrong winner: refused. Three refusals (more than accepted games) cut the executor off.
 - **The tally**: A's wins, draws and losses, pentanomial per pair (each pair plays the same opening, colours swapped), Elo with its margin, SPRT (no conclusion before 30 games).
+- **Self-play** (v3.24, migration 009): `type: 'autojeu'` on `POST /ordo/campagnes`, with `poidsA` and `parties` (no `poidsB` or `paires`). A single weight set plays against itself, one seed per game (each with a randomly drawn opening), verified like a duel; the tally counts games, positions and the Black / draw / White split, with no Elo or SPRT. The position database is then exported:
+
+  ```bash
+  node --env-file=.env scripts/exporter-positions.js <campaign> > positions.ndjson          # or --csv, --sans-ouverture
+  docker compose exec -T api node scripts/exporter-positions.js <campaign> > positions.ndjson
+  ```
+
+  One line per position: `plateau` (61 cells, `b` `w` `.`), `trait` (side to move), marbles pushed out (`pb`, `pw`), `eval` (current judge, from the side to move), `resultat` (1, 0, -1 from the side to move), `fin`, `ouv` (random opening). It is the basis of a neural network that will run "in the shadow" alongside the current judge, without replacing it.
 - **The engine**: `node scripts/importer-moteur.js <game index.html>` registers a game version's worker code in `moteur/registre.json`. A browser whose game version isn't registered can't plug in (409). To redo for every game version that changes the worker code.
 
 Plugging in a PC:
